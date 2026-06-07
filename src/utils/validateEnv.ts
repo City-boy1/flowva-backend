@@ -26,7 +26,8 @@ const REQUIRED: { key: string; description: string }[] = [
   { key: 'CLOUDINARY_API_SECRET', description: 'Cloudinary API secret' },
 
   // ── Email ───────────────────────────────────────────────────────────────────
-  { key: 'RESEND_API_KEY',        description: 'Resend email API key' },
+  { key: 'GMAIL_USER',            description: 'Gmail address for sending emails' },
+  { key: 'GMAIL_PASS',            description: 'Gmail app password for sending emails' },
   { key: 'ADMIN_EMAIL',           description: 'Platform admin email' },
 
   // ── Helio (buyer checkout + auto 30/70 split on-chain) ──────────────────────
@@ -41,7 +42,6 @@ const REQUIRED: { key: string; description: string }[] = [
 
 const OPTIONAL: { key: string; description: string }[] = [
   { key: 'SENTRY_DSN',            description: 'Sentry DSN for error tracking' },
-  { key: 'RESEND_DEV_TO',         description: 'Override email recipient in development' },
 ];
 
 export function validateEnv(): void {
