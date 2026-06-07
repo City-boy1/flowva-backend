@@ -19,7 +19,7 @@ RUN npm run build
 # ─── Stage 2: Production ──────────────────────────────────────────────────────
 FROM node:20-alpine AS production
 
-RUN apk add --no-cache tini
+RUN apk add --no-cache tini openssl openssl-dev libc6-compat
 
 WORKDIR /app
 
