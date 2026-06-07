@@ -33,6 +33,7 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
 RUN addgroup -S flowva && adduser -S flowva -G flowva
+RUN mkdir -p /app/logs && chown -R flowva:flowva /app/logs
 USER flowva
 
 EXPOSE 5000

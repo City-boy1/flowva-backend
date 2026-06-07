@@ -1,10 +1,7 @@
 // src/utils/logger.ts
 import winston from 'winston';
 import DailyRotateFile from 'winston-daily-rotate-file';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isProd = process.env.NODE_ENV === 'production';
 
 // ─── Custom format: strip stack traces in production ─────────────────────────
@@ -44,9 +41,8 @@ const transports: winston.transport[] = [
     silent: process.env.NODE_ENV === 'test',
   }),
 ];
-
-if (isProd) {
-  const logsDir = path.join(__dirname, '../../logs');
+if (isProd && process.env.ENABLE_FILE_LOGS === 'true') {
+  const logsDir = '/tmp/logs';
 
   transports.push(
     new DailyRotateFile({
