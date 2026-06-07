@@ -8,9 +8,8 @@ const BASE = process.env.FRONTEND_URL || 'http://127.0.0.1:5500';
 // In dev, all emails go to your verified Resend address
 // In production, emails go to the actual user
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || null;
-const EMAIL_FROM = process.env.EMAIL_FROM || 'onboarding@resend.dev';
-const HAS_CUSTOM_DOMAIN = EMAIL_FROM && !EMAIL_FROM.includes('resend.dev') && !EMAIL_FROM.includes('onboarding@');
-const DEV_OVERRIDE = !HAS_CUSTOM_DOMAIN ? (process.env.RESEND_DEV_TO || ADMIN_EMAIL) : null;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const DEV_OVERRIDE = IS_PRODUCTION ? null : (process.env.RESEND_DEV_TO || ADMIN_EMAIL || null);
 
 async function send(to: string, subject: string, html: string) {
   const recipient = DEV_OVERRIDE || to;
@@ -19,12 +18,22 @@ async function send(to: string, subject: string, html: string) {
   try {
     console.log(`SENDING EMAIL → to: ${recipient} | subject: ${finalSubject}`);
 
-    const result = await resend.emails.send({
-      from: `FLOWVA <${FROM}>`,
-      to: recipient,
-      subject: finalSubject,
-      html,
-    });
+    const ADMIN_COPY_SUBJECTS = [
+  'You just made a sale',
+  'Dispute opened',
+];
+
+const shouldCopyAdmin = IS_PRODUCTION &&
+  ADMIN_EMAIL &&
+  ADMIN_EMAIL !== recipient &&
+  ADMIN_COPY_SUBJECTS.some(s => subject.includes(s));
+
+const result = await resend.emails.send({
+  from:    `FLOWVA <${FROM}>`,
+  to:      shouldCopyAdmin ? [recipient, ADMIN_EMAIL!] : recipient,
+  subject: finalSubject,
+  html,
+});
 
     if ((result as any).error) {
       console.error('RESEND REJECTED:', JSON.stringify((result as any).error));
