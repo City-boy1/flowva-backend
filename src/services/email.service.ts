@@ -1,12 +1,18 @@
+import nodemailer from 'nodemailer';
 import logger from '../utils/logger.js';
 
-const FROM_EMAIL    = 'noreply@flowva.app';
-const FROM_NAME     = 'FLOWVA';
 const BASE          = process.env.FRONTEND_URL || 'https://flowvamarket.vercel.app';
 const ADMIN_EMAIL   = process.env.ADMIN_EMAIL || '';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-
 const ADMIN_COPY_SUBJECTS = ['You just made a sale', 'Dispute opened'];
+
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.GMAIL_USER!,
+    pass: process.env.GMAIL_PASS!,
+  },
+});
 
 async function send(to: string, subject: string, html: string) {
   try {
@@ -16,30 +22,16 @@ async function send(to: string, subject: string, html: string) {
       ADMIN_EMAIL !== to &&
       ADMIN_COPY_SUBJECTS.some(s => subject.includes(s));
 
-    const toList: { email: string }[] = [{ email: to }];
-    if (shouldCopyAdmin) toList.push({ email: ADMIN_EMAIL });
+    const toList = shouldCopyAdmin ? `${to},${ADMIN_EMAIL}` : to;
 
-    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'api-key': process.env.BREVO_API_KEY!,
-      },
-      body: JSON.stringify({
-        sender:      { name: FROM_NAME, email: FROM_EMAIL },
-        to:          toList,
-        subject,
-        htmlContent: html,
-      }),
+    const info = await transporter.sendMail({
+      from: `"FLOWVA" <${process.env.GMAIL_USER}>`,
+      to: toList,
+      subject,
+      html,
     });
 
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Brevo ${res.status}: ${err}`);
-    }
-
-    const data = await res.json() as { messageId?: string };
-logger.info('Email sent', { to, subject, messageId: data.messageId });
+    logger.info('Email sent', { to, subject, messageId: info.messageId });
   } catch (err: any) {
     logger.error('Email send failed', {
       to,
