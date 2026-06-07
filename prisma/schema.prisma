@@ -1,0 +1,335 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                  String         @id @default(cuid())
+  name                String
+  email               String         @unique
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  avatarUrl           String?
+  bio                 String?
+  country             String         @default("GH")
+  emailVerified       Boolean        @default(false)
+  emailVerifyToken    String?
+  isEarlyAdopter      Boolean        @default(false)
+  passwordHash        String
+  passwordResetExpiry DateTime?
+  passwordResetToken  String?
+  status              UserStatus     @default(PENDING_VERIFICATION)
+  role                Role           @default(BUYER)
+  emailNotif          Boolean        @default(true)
+  marketing           Boolean        @default(false)
+  publicProfile       Boolean        @default(true)
+  bids                Bid[]
+  commissions         Commission[]
+  wallet              CreatorWallet?
+  favourites          Favourite[]
+  followers           Follow[]       @relation("UserFollowers")
+  following           Follow[]       @relation("UserFollowing")
+  notifications       Notification[]
+  ordersAsBuyer       Order[]        @relation("BuyerOrders")
+  ordersAsCreator     Order[]        @relation("CreatorOrders")
+  payments            Payment[]
+  payoutSetting       PayoutSetting?
+  projects            Project[]
+  ratingsReceived     Rating[]       @relation("RatingsReceived")
+  ratingsGiven        Rating[]       @relation("RatingsGiven")
+  refreshTokens       RefreshToken[]
+
+  @@index([email])
+  @@index([role])
+  @@index([status])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  userAgent String?
+  ipAddress String?
+  createdAt DateTime  @default(now())
+  revoked   Boolean   @default(false)
+  revokedAt DateTime?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+}
+
+model PayoutSetting {
+  id            String       @id @default(cuid())
+  userId        String       @unique
+  primaryMethod PayoutMethod
+  isVerified    Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  solanaAddress String
+  helioPaylinkId String? 
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CreatorWallet {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  totalEarned Float    @default(0)
+  updatedAt   DateTime @updatedAt
+  pending     Float    @default(0)
+  createdAt   DateTime @default(now()) @db.Timestamp(6)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  buyerId         String
+  creatorId       String
+  mongoTemplateId String?
+  mongoBidId      String?
+  type            String
+  amount          Float
+  currency        String      @default("USD")
+  status          OrderStatus @default(PENDING)
+  deliveryNote    String?
+  revisionCount   Int         @default(0)
+  completedAt     DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  commission      Commission?
+  escrow          Escrow?
+  buyer           User        @relation("BuyerOrders", fields: [buyerId], references: [id])
+  creator         User        @relation("CreatorOrders", fields: [creatorId], references: [id])
+  payment         Payment?
+  rating          Rating?
+
+  @@index([buyerId])
+  @@index([creatorId])
+  @@index([status])
+}
+
+model Payment {
+  id             String          @id @default(cuid())
+  orderId        String          @unique
+  userId         String
+  provider       PaymentProvider
+  providerRef    String          @unique
+  amount         Float
+  currency       String          @default("USD")
+  status         PaymentStatus   @default(PENDING)
+  webhookEventId String?         @unique
+  metadata       Json?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  order          Order           @relation(fields: [orderId], references: [id])
+  user           User            @relation(fields: [userId], references: [id])
+
+  @@index([providerRef])
+  @@index([userId])
+}
+
+model Escrow {
+  id         String       @id @default(cuid())
+  orderId    String       @unique
+  amount     Float
+  currency   String       @default("USD")
+  status     EscrowStatus @default(HELD)
+  heldAt     DateTime     @default(now())
+  releasedAt DateTime?
+  refundedAt DateTime?
+  order      Order        @relation(fields: [orderId], references: [id])
+}
+
+model Commission {
+  id               String    @id @default(cuid())
+  orderId          String    @unique
+  creatorId        String
+  grossAmount      Float
+  commissionRate   Float
+  commissionAmount Float
+  creatorEarning   Float
+  disbursedToAdmin Boolean   @default(false)
+  disbursedAt      DateTime?
+  adminPayoutRef   String?
+  createdAt        DateTime  @default(now())
+  creator          User      @relation(fields: [creatorId], references: [id])
+  order            Order     @relation(fields: [orderId], references: [id])
+
+  @@index([creatorId])
+  @@index([disbursedToAdmin])
+}
+
+model Project {
+  id              String        @id @default(cuid())
+  clientId        String
+  mongoProjectId  String?
+  status          ProjectStatus @default(DRAFT)
+  budget          Float?
+  biddingClosesAt DateTime?
+  acceptedBidId   String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  bids            Bid[]
+  client          User          @relation(fields: [clientId], references: [id])
+
+  @@index([clientId])
+  @@index([status])
+}
+
+model Bid {
+  id        String    @id @default(cuid())
+  projectId String
+  creatorId String
+  amount    Float
+  status    BidStatus @default(PENDING)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  creator   User      @relation(fields: [creatorId], references: [id])
+  project   Project   @relation(fields: [projectId], references: [id])
+
+  @@index([projectId])
+  @@index([creatorId])
+}
+
+model ProcessedWebhook {
+  id          String   @id @default(cuid())
+  eventId     String   @unique
+  provider    String
+  processedAt DateTime @default(now())
+
+  @@index([eventId])
+}
+
+model Follow {
+  id          String   @id @default(cuid())
+  followerId  String
+  followingId String
+  createdAt   DateTime @default(now())
+  follower    User     @relation("UserFollowers", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("UserFollowing", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+}
+
+model Rating {
+  id        String   @id @default(cuid())
+  raterId   String
+  creatorId String
+  orderId   String   @unique
+  score     Int
+  review    String?
+  createdAt DateTime @default(now())
+  reply     String?
+  creator   User     @relation("RatingsReceived", fields: [creatorId], references: [id], onDelete: Cascade)
+  order     Order    @relation(fields: [orderId], references: [id])
+  rater     User     @relation("RatingsGiven", fields: [raterId], references: [id], onDelete: Cascade)
+
+  @@index([creatorId])
+  @@index([raterId])
+}
+
+model Notification {
+  id         String   @id @default(cuid())
+  userId     String
+  type       String
+  title      String
+  message    String
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  templateId String?
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([read])
+}
+
+model Favourite {
+  id         String   @id @default(cuid())
+  userId     String
+  templateId String
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, templateId])
+  @@index([userId])
+}
+
+enum Role {
+  BUYER
+  CREATOR
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+  BANNED
+}
+
+enum PayoutMethod {
+  USDC_WALLET
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  IN_PROGRESS
+  DELIVERED
+  REVISION_REQUESTED
+  COMPLETED
+  DISPUTED
+  REFUNDED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum PaymentProvider {
+  HELIO
+}
+
+enum EscrowStatus {
+  HELD
+  RELEASED
+  REFUNDED
+  DISPUTED
+}
+
+enum BidStatus {
+  PENDING
+  SHORTLISTED
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+}
+
+enum ProjectStatus {
+  DRAFT
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  DISPUTED
+  PENDING
+}
+
+enum WithdrawalStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}

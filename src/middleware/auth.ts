@@ -1,77 +1,38 @@
-import type { Response, NextFunction } from 'express';
-import type { AuthRequest } from '../types/index.js';
-import { verifyAccessToken } from '../utils/token.js';
-import { User } from '../db/mongoose.js';
-import logger from '../utils/logger.js';
+import type { Request, Response, NextFunction } from 'express';
+import { verifyAccessToken } from '../utils/jwt.js';
+import { AppError } from './errorHandler.js';
 
-// ── Require valid JWT access token ────────────────────
-export async function protect(
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> {
+export interface AuthUser {
+  id: string;
+  email: string;
+  role: string;
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: AuthUser;
+    }
+  }
+}
+
+export function authenticate(req: Request, _res: Response, next: NextFunction): void {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) throw new AppError('No token provided', 401);
+  const token = header.slice(7);
   try {
-    const header = req.headers.authorization;
-
-    if (!header?.startsWith('Bearer ')) {
-      res.status(401).json({ success: false, message: 'No token provided' });
-      return;
-    }
-
-    const token = header.split(' ')[1];
-    const decoded = verifyAccessToken(token);
-
-    // Fetch fresh user so we always have current role/stripeAccountId
-    const user = await User.findById(decoded.id).select('-password -refreshToken');
-
-    if (!user) {
-      res.status(401).json({ success: false, message: 'User not found' });
-      return;
-    }
-
-    req.user = {
-      id:             user._id.toString(),
-      email:          user.email,
-      role:           user.role.toUpperCase() as 'BUYER' | 'CREATOR' | 'ADMIN',
-      name:           user.name,
-      stripeAccountId: user.stripeAccountId,
-    };
-
+    const payload = verifyAccessToken(token);
+    req.user = { id: payload.sub, email: payload.email, role: payload.role };
     next();
-  } catch (err) {
-    logger.debug('Auth middleware: invalid token');
-    res.status(401).json({ success: false, message: 'Invalid or expired token' });
+  } catch {
+    throw new AppError('Invalid or expired token', 401);
   }
 }
 
-// ── Require creator role ──────────────────────────────
-export function requireCreator(
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-): void {
-  if (!req.user) {
-    res.status(401).json({ success: false, message: 'Not authenticated' });
-    return;
-  }
-
-  if (req.user.role !== 'CREATOR' && req.user.role !== 'ADMIN') {
-    res.status(403).json({ success: false, message: 'Creator account required' });
-    return;
-  }
-
-  next();
-}
-
-// ── Require admin role ───────────────────────────────
-export function requireAdmin(
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-): void {
-  if (req.user?.role !== 'ADMIN') {
-    res.status(403).json({ success: false, message: 'Admin access required' });
-    return;
-  }
-  next();
+export function requireRole(...roles: string[]) {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    if (!req.user) throw new AppError('Unauthorised', 401);
+    if (!roles.includes(req.user.role)) throw new AppError('Forbidden', 403);
+    next();
+  };
 }

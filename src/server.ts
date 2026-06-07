@@ -1,164 +1,167 @@
 import 'dotenv/config';
+import * as Sentry from '@sentry/node';
 import express from 'express';
-import cors from 'cors';
 import helmet from 'helmet';
+import cors from 'cors';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
+import hpp from 'hpp';
 import morgan from 'morgan';
-import * as Sentry from '@sentry/node';
 
-import { connectPostgres, disconnectPostgres } from './db/prisma.js';
-import { connectMongo,  disconnectMongo  } from './db/mongoose.js';
-import { initWebhookQueue } from './queues/webhookQueue.js';
-import { globalLimiter, distributedLimiter } from './middleware/rateLimiter.js';
-import { errorHandler, notFound } from './middleware/errorHandler.js';
+import { validateEnv } from './utils/validateEnv.js';
 import logger from './utils/logger.js';
+import { connectPrisma, disconnectPrisma } from './db/prisma.js';
+import { connectMongo, disconnectMongo } from './db/mongoose.js';
+import { globalRateLimit } from './middleware/rateLimiter.js';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
-import authRoutes      from './routes/authRoutes.js';
-import templateRoutes  from './routes/templateRoutes.js';
-import paymentRoutes   from './routes/paymentRoutes.js';
-import messageRoutes   from './routes/messageRoutes.js';
-import dashboardRoutes from './routes/dashboardRoutes.js';
-import orderRoutes     from './routes/orderRoutes.js';
-import creatorRoutes   from './routes/creatorRoutes.js';
-import reviewRoutes    from './routes/reviewRoutes.js';
+import authRoutes from './routes/auth.routes.js';
+import userRoutes from './routes/user.routes.js';
+import templateRoutes from './routes/template.routes.js';
+import projectRoutes from './routes/project.routes.js';
+import paymentRoutes from './routes/payment.routes.js';
+import payoutRoutes from './routes/payout.routes.js';
+import messageRoutes from './routes/message.routes.js';
+import adminRoutes from './routes/admin.routes.js';
+import tutorialRoutes from './routes/tutorial.routes.js';
+import { startPayoutWorker } from './queues/payout.queue.js';
 
-// ── Sentry (must initialise before anything else) ─────
+validateEnv();
+
 if (process.env.SENTRY_DSN) {
   Sentry.init({
-    dsn:              process.env.SENTRY_DSN,
-    environment:      process.env.NODE_ENV ?? 'development',
-    tracesSampleRate: 0.2,
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV,
+    tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
   });
-  logger.info('Sentry initialised');
 }
 
-const app  = express();
-const PORT = parseInt(process.env.PORT ?? '5000');
-const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://127.0.0.1:5500';
+const app = express();
+const PORT = parseInt(process.env.PORT || '5000', 10);
 
-// ══════════════════════════════════════════════════════
-// SECURITY HEADERS
-// ══════════════════════════════════════════════════════
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: 'cross-origin' },
-}));
+// ─── Security ────────────────────────────────────────────────────────────────
+app.set('trust proxy', 1);
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+const allowedOrigins = [
 
-// ══════════════════════════════════════════════════════
-// CORS — only allow the configured frontend URL
-// ══════════════════════════════════════════════════════
+  // development
+  'http://127.0.0.1:5500',
+
+  // optional localhost support
+  'http://localhost:5500',
+];
+
+// production frontend
+if (process.env.FRONTEND_URL) {
+  allowedOrigins.push(
+    process.env.FRONTEND_URL
+  );
+}
+
 app.use(cors({
-  origin:         FRONTEND_URL,
-  credentials:    true,
-  methods:        ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+
+  origin(origin, callback) {
+
+    // mobile apps / postman
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (
+      allowedOrigins.includes(origin)
+    ) {
+      return callback(null, true);
+    }
+
+    return callback(
+      new Error(
+        `CORS blocked for origin: ${origin}`
+      )
+    );
+  },
+
+  credentials: true,
+
+  methods: [
+    'GET',
+    'POST',
+    'PUT',
+    'PATCH',
+    'DELETE',
+    'OPTIONS',
+  ],
+
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+  ],
 }));
+app.use(hpp());
+app.use(globalRateLimit);
 
-// ══════════════════════════════════════════════════════
-// STRIPE WEBHOOK — raw body BEFORE express.json()
-// This route must be registered before the body parser middleware
-// ══════════════════════════════════════════════════════
-app.post(
-  '/api/payments/webhook',
-  express.raw({ type: 'application/json' }),
-  (req, res, next) => {
-    // Dynamically import to avoid circular issues
-    import('./routes/paymentRoutes.js')
-      .then(m => m.default(req, res, next))
-      .catch(next);
-  }
-);
-
-// ══════════════════════════════════════════════════════
-// BODY PARSERS (after webhook raw route)
-// ══════════════════════════════════════════════════════
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
-app.use(cookieParser());
+// ─── Body / Cookies ──────────────────────────────────────────────────────────
+// Raw body preserved for webhook signature verification
+app.use('/api/payments/webhook/helio', express.raw({ type: '*/*' }));
 app.use(compression());
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(cookieParser(process.env.COOKIE_SECRET));
 
-// ══════════════════════════════════════════════════════
-// LOGGING
-// ══════════════════════════════════════════════════════
-app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
-// ══════════════════════════════════════════════════════
-// RATE LIMITING
-// ══════════════════════════════════════════════════════
-app.use(globalLimiter);
-app.use(distributedLimiter);
+// ─── Logging ─────────────────────────────────────────────────────────────────
+if (process.env.NODE_ENV !== 'test') {
+  app.use(morgan('combined', {
+    stream: { write: (msg) => logger.info(msg.trim()) },
+    skip: (req) => req.path === '/api/health',
+  }));
+}
 
-// ══════════════════════════════════════════════════════
-// HEALTH CHECK
-// ══════════════════════════════════════════════════════
-app.get('/health', (_req, res) => {
+// ─── Health ───────────────────────────────────────────────────────────────────
+app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// ══════════════════════════════════════════════════════
-// API ROUTES
-// ══════════════════════════════════════════════════════
-app.use('/api/auth',       authRoutes);
-app.use('/api/templates',  templateRoutes);
-app.use('/api/payments',   paymentRoutes);
-app.use('/api/messages',   messageRoutes);
-app.use('/api/dashboard',  dashboardRoutes);
-app.use('/api/orders',     orderRoutes);
-app.use('/api/creators',   creatorRoutes);
-
-// Reviews are nested under templates: /api/templates/:templateId/reviews
-app.use('/api/templates/:templateId/reviews', reviewRoutes);
-
-// ══════════════════════════════════════════════════════
-// 404 + GLOBAL ERROR HANDLER (must be last)
-// ══════════════════════════════════════════════════════
-app.use(notFound);
+// ─── Routes ───────────────────────────────────────────────────────────────────
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/templates', templateRoutes);
+app.use('/api/projects', projectRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/payouts', payoutRoutes);
+app.use('/api/messages', messageRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/tutorials', tutorialRoutes);
+// Keep-alive for free tier (prevents cold starts killing long uploads)
+app.get('/ping', (_req, res) => res.json({ ok: true }));
+// ─── Errors ───────────────────────────────────────────────────────────────────
+app.use(notFoundHandler);
 app.use(errorHandler);
 
-// ══════════════════════════════════════════════════════
-// START SERVER
-// ══════════════════════════════════════════════════════
-async function start(): Promise<void> {
-  try {
-    await connectPostgres();
-    await connectMongo();
-    initWebhookQueue();
-
-    const server = app.listen(PORT, () => {
-      logger.info(`FLOWVA API — port ${PORT} [${process.env.NODE_ENV ?? 'development'}]`);
-      logger.info(`CORS allowed origin: ${FRONTEND_URL}`);
-    });
-
-    // ── Graceful shutdown ────────────────────────────
-    const shutdown = async (signal: string): Promise<void> => {
-      logger.info(`${signal} received — shutting down`);
-      server.close(async () => {
-        await disconnectPostgres();
-        await disconnectMongo();
-        logger.info('Connections closed — exiting');
-        process.exit(0);
-      });
-      setTimeout(() => { process.exit(1); }, 10_000);
-    };
-
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT',  () => shutdown('SIGINT'));
-
-    process.on('unhandledRejection', (reason) => {
-      logger.error('Unhandled Rejection', reason);
-      Sentry.captureException(reason);
-    });
-
-    process.on('uncaughtException', (err) => {
-      logger.error('Uncaught Exception', err);
-      Sentry.captureException(err);
-      process.exit(1);
-    });
-
-  } catch (err) {
-    logger.error('Server failed to start', err);
-    process.exit(1);
-  }
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+async function start() {
+  await connectPrisma();
+  await connectMongo();
+  startPayoutWorker();
+  app.listen(PORT, () => logger.info(`FLOWVA API running on port ${PORT}`));
 }
 
-start();
+async function shutdown() {
+  logger.info('Shutting down…');
+  await disconnectPrisma();
+  await disconnectMongo();
+  process.exit(0);
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled rejection', { reason });
+  Sentry.captureException(reason);
+});
+
+start().catch((err) => {
+  logger.error('Startup failed', { error: (err as Error).message });
+  process.exit(1);
+});
+
+export default app;

@@ -1,76 +1,121 @@
-import rateLimit from 'express-rate-limit';
 import { Ratelimit } from '@upstash/ratelimit';
-import { Redis } from '@upstash/redis';
 import type { Request, Response, NextFunction } from 'express';
+import getRedis from '../db/redis.js';
 import logger from '../utils/logger.js';
 
-// ── Express rate-limit (in-memory, per instance) ──────
-// Use as a first layer; Upstash handles distributed
-
-export const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,  // 15 minutes
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, message: 'Too many requests, please try again later' },
-});
-
-export const uploadLimiter = rateLimit({
-  windowMs: 60 * 1000,  // 1 minute
-  max: 10,
-  message: { success: false, message: 'Upload rate limit exceeded, please wait' },
-});
-
-export const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  message: { success: false, message: 'Too many auth attempts, please try again later' },
-});
-
-// ── Upstash distributed rate limiting ─────────────────
-// Falls back gracefully if env vars are missing (dev)
-let upstashLimiter: Ratelimit | null = null;
-
-if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-  const redis = new Redis({
-    url:   process.env.UPSTASH_REDIS_REST_URL,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN,
-  });
-
-  upstashLimiter = new Ratelimit({
-    redis,
-    limiter: Ratelimit.slidingWindow(100, '15 m'),
-    analytics: true,
-    prefix: 'flowva',
+function makeLimiter(requests: number, windowSeconds: number) {
+  return new Ratelimit({
+    redis: getRedis(),
+    limiter: Ratelimit.slidingWindow(requests, `${windowSeconds} s`),
+    analytics: false,
+    prefix: 'flowva:rl',
   });
 }
 
-export async function distributedLimiter(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> {
-  if (!upstashLimiter) {
-    next();
-    return;
-  }
+let _global: Ratelimit | null = null;
+let _auth:   Ratelimit | null = null;
+let _upload: Ratelimit | null = null;
+let _payment: Ratelimit | null = null;
 
-  try {
-    const identifier = req.ip ?? 'unknown';
-    const { success, limit, remaining, reset } = await upstashLimiter.limit(identifier);
+function globalLimiter()  {
+  return (_global  ??= makeLimiter(
+    parseInt(process.env.RATE_LIMIT_GLOBAL_MAX  || '500',  10),
+    Math.floor(parseInt(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS  || '900000',  10) / 1000)
+  ));
+}
+function authLimiter() {
+  return (_auth ??= makeLimiter(
+    parseInt(process.env.RATE_LIMIT_AUTH_MAX || '30', 10),
+    Math.floor(parseInt(process.env.RATE_LIMIT_AUTH_WINDOW_MS || '900000', 10) / 1000)
+  ));
+}
+function uploadLimiter()  {
+  return (_upload  ??= makeLimiter(
+    parseInt(process.env.RATE_LIMIT_UPLOAD_MAX  || '40',  10),
+    Math.floor(parseInt(process.env.RATE_LIMIT_UPLOAD_WINDOW_MS  || '3600000', 10) / 1000)
+  ));
+}
+let _general: Ratelimit | null = null;
 
-    res.setHeader('X-RateLimit-Limit',     limit);
-    res.setHeader('X-RateLimit-Remaining', remaining);
-    res.setHeader('X-RateLimit-Reset',     new Date(reset).toISOString());
+function generalLimiter() {
+  return (_general ??= makeLimiter(
+    parseInt(process.env.RATE_LIMIT_GENERAL_MAX || '60', 10),
+    Math.floor(parseInt(process.env.RATE_LIMIT_GENERAL_WINDOW_MS || '60000', 10) / 1000)
+  ));
+}
+function paymentLimiter() {
+  return (_payment ??= makeLimiter(
+    parseInt(process.env.RATE_LIMIT_PAYMENT_MAX || '50', 10),
+    Math.floor(parseInt(process.env.RATE_LIMIT_PAYMENT_WINDOW_MS || '900000', 10) / 1000)
+  ));
+}
 
-    if (!success) {
-      res.status(429).json({ success: false, message: 'Rate limit exceeded' });
-      return;
+// Auth routes always key by IP — never by user ID.
+// Keying by user ID breaks logout/delete flows because the
+// user no longer exists, collapsing all anonymous requests
+// into one shared bucket and triggering false 429s.
+function getIp(req: Request): string {
+  const ip =
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+    req.socket.remoteAddress ||
+    'unknown';
+  return `ip:${ip}`;
+}
+
+function getIdentifier(req: Request, forceIp = false): string {
+  if (forceIp) return getIp(req);
+  const user = (req as any).user as { id?: string } | undefined;
+  if (user?.id) return `user:${user.id}`;
+  return getIp(req);
+}
+
+function createMiddleware(getLimiter: () => Ratelimit, label: string, forceIp = false) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const id = getIdentifier(req, forceIp);
+      const { success, limit, remaining, reset } = await getLimiter().limit(id);
+
+      const nowMs   = Date.now();
+      const resetMs = reset > 1_000_000_000_000 ? reset : reset * 1000;
+      const retryAfterSeconds = Math.max(1, Math.ceil((resetMs - nowMs) / 1000));
+
+      res.setHeader('X-RateLimit-Limit',     limit);
+      res.setHeader('X-RateLimit-Remaining', remaining);
+      res.setHeader('X-RateLimit-Reset',     Math.floor(resetMs / 1000));
+      res.setHeader('Retry-After',           retryAfterSeconds);
+
+      if (!success) {
+        logger.warn('Rate limit exceeded', { id, label, path: req.path, retryAfter: retryAfterSeconds });
+        res.status(429).json({
+          success: false,
+          message: `Too many requests. Please try again in ${retryAfterSeconds} seconds.`,
+          retryAfter: retryAfterSeconds,
+        });
+        return;
+      }
+
+      next();
+    } catch (err) {
+      // Redis is down or slow — fail open so the app never crashes
+      logger.error('Rate limiter error (failing open)', { error: (err as Error).message });
+      next();
     }
-
-    next();
-  } catch (err) {
-    logger.warn('Upstash rate limiter error — passing through', err);
-    next(); // degrade gracefully
-  }
+  };
 }
+let _download: Ratelimit | null = null;
+function downloadLimiter() {
+  return (_download ??= makeLimiter(10, 900)); // 10 per 15 min
+}
+
+let _msg: Ratelimit | null = null;
+function msgLimiter() {
+  return (_msg ??= makeLimiter(40, 60)); // 40 requests per 60s per user
+}
+export const msgRateLimit = createMiddleware(msgLimiter, 'messages');
+
+export const globalRateLimit  = createMiddleware(globalLimiter,  'global');
+export const authRateLimit    = createMiddleware(authLimiter,    'auth',    true);
+export const uploadRateLimit  = createMiddleware(uploadLimiter,  'upload');
+export const paymentRateLimit = createMiddleware(paymentLimiter, 'payment');
+export const generalRateLimit = createMiddleware(generalLimiter, 'general'); // ADD this line
+export const downloadRateLimit = createMiddleware(downloadLimiter, 'download', true);
