@@ -26,9 +26,8 @@ const REQUIRED: { key: string; description: string }[] = [
   { key: 'CLOUDINARY_API_SECRET', description: 'Cloudinary API secret' },
 
   // ── Email ───────────────────────────────────────────────────────────────────
-  { key: 'GMAIL_USER',            description: 'Gmail address for sending emails' },
-  { key: 'GMAIL_PASS',            description: 'Gmail app password for sending emails' },
-  { key: 'ADMIN_EMAIL',           description: 'Platform admin email' },
+  { key: 'BREVO_API_KEY',  description: 'Brevo email API key' },
+  { key: 'ADMIN_EMAIL',    description: 'Platform admin email' },
 
   // ── Helio (buyer checkout + auto 30/70 split on-chain) ──────────────────────
   { key: 'HELIO_API_KEY',         description: 'Helio public API key' },
