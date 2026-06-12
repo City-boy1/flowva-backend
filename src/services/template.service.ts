@@ -7,11 +7,9 @@ import logger from '../utils/logger.js';
 
 
 // ─── Size limits (free-tier safe) ─────────────────────────────────────────────
-const MAX_ZIP_BYTES   = 150 * 1024 * 1024;   // 150 MB
-const MAX_VIDEO_BYTES = 200 * 1024 * 1024;   // 200 MB
-const MAX_IMAGE_BYTES =  10 * 1024 * 1024;   //  10 MB
-const MAX_PDF_BYTES   =  20 * 1024 * 1024;   //  20 MB
-
+const MAX_VIDEO_BYTES =  70 * 1024 * 1024;   //  70 MB
+const MAX_IMAGE_BYTES =   5 * 1024 * 1024;   //   5 MB
+const MAX_PDF_BYTES   =  10 * 1024 * 1024;   //  10 MB
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function resolveFileType(mime: string): 'video' | 'zip' | 'image' | 'pdf' {
@@ -24,7 +22,6 @@ function resolveFileType(mime: string): 'video' | 'zip' | 'image' | 'pdf' {
 function checkSize(fileType: ReturnType<typeof resolveFileType>, bytes: number) {
   const limits: Record<string, number> = {
     video: MAX_VIDEO_BYTES,
-    zip:   MAX_ZIP_BYTES,
     image: MAX_IMAGE_BYTES,
     pdf:   MAX_PDF_BYTES,
   };
@@ -134,7 +131,7 @@ async create(creatorId: string, data: {
     const skip = (page - 1) * safeLimit;
 
     const filter: Record<string, any> = {};
-filter.status = status ?? 'APPROVED';
+filter.status = status ?? (creatorId ? { $ne: 'REJECTED' } : 'APPROVED');
 
     if (category)  filter.category  = category;
     if (creatorId) filter.creatorId = creatorId;
@@ -447,6 +444,73 @@ return updated;
       process.env.JWT_ACCESS_SECRET!,
       { expiresIn: '15m' }
     );
+  },
+
+  async rateTemplate(templateId: string, buyerId: string, data: {
+    orderId: string;
+    score: number;
+    review?: string;
+  }) {
+    const template = await Template.findById(templateId);
+    if (!template) throw new AppError('Template not found', 404);
+    if (template.status !== 'APPROVED') throw new AppError('Template not available', 403);
+
+    // Verify the buyer has a completed/paid order for this template
+    const order = await prisma.order.findFirst({
+      where: {
+        id:              data.orderId,
+        buyerId,
+        mongoTemplateId: templateId,
+        status:          { in: ['PAID', 'COMPLETED'] },
+      },
+    });
+    if (!order) throw new AppError('You must purchase this template before rating it', 403);
+
+    // Prevent duplicate ratings
+    const existing = await prisma.templateRating.findUnique({
+      where: { orderId: data.orderId },
+    });
+    if (existing) throw new AppError('You have already rated this template', 409);
+
+    // Also block if they already rated this template via any order
+    const alreadyRated = await prisma.templateRating.findUnique({
+      where: { raterId_mongoTemplateId: { raterId: buyerId, mongoTemplateId: templateId } },
+    });
+    if (alreadyRated) throw new AppError('You have already rated this template', 409);
+
+    await prisma.templateRating.create({
+      data: {
+        raterId:         buyerId,
+        mongoTemplateId: templateId,
+        orderId:         data.orderId,
+        score:           data.score,
+        review:          data.review,
+      },
+    });
+
+    // Recompute average and update MongoDB
+    const allRatings = await prisma.templateRating.findMany({
+      where: { mongoTemplateId: templateId },
+      select: { score: true },
+    });
+    const avg = allRatings.reduce((s, r) => s + r.score, 0) / allRatings.length;
+
+    await Template.findByIdAndUpdate(templateId, {
+      rating:      +avg.toFixed(2),
+      ratingCount: allRatings.length,
+    });
+
+    return { rating: +avg.toFixed(2), ratingCount: allRatings.length };
+  },
+
+  async getTemplateRatings(templateId: string) {
+    const ratings = await prisma.templateRating.findMany({
+      where: { mongoTemplateId: templateId },
+      include: { rater: { select: { name: true, avatarUrl: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+    return ratings;
   },
 
   async downloadWithToken(token: string): Promise<string> {

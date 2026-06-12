@@ -31,6 +31,8 @@ rejectionReason: string | null;
 downloadCount: number;
   purchaseCount: number;
   salesCount: number;
+  rating: number;
+  ratingCount: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -90,6 +92,8 @@ downloadCount: {
 },
     purchaseCount:    { type: Number, default: 0 },
     salesCount:    { type: Number, default: 0 },
+    rating:        { type: Number, default: 0 },
+    ratingCount:   { type: Number, default: 0 },
   },
   {
     timestamps: true,

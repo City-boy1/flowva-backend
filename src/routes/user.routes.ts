@@ -5,16 +5,17 @@ import { asyncHandler } from '../middleware/asyncHandler.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { uploadRateLimit } from '../middleware/rateLimiter.js';
+import { uploadRateLimit, generalRateLimit } from '../middleware/rateLimiter.js';
 import multer from 'multer';
 import prisma from '../db/prisma.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 import { notificationController } from '../controllers/notification.controller.js';
+import { emailService } from '../services/email.service.js';
 
 
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) cb(null, true);
     else cb(new AppError('Image files only', 400));
@@ -36,6 +37,11 @@ const userController = {
     if (!req.file) throw new AppError('Image file required', 400);
     const result = await userService.uploadAvatar(req.user!.id, req.file.buffer);
     res.json({ success: true, ...result });
+  }),
+
+  deleteAvatar: asyncHandler(async (req: Request, res: Response) => {
+    await userService.deleteAvatar(req.user!.id);
+    res.json({ success: true });
   }),
 
   changePassword: asyncHandler(async (req: Request, res: Response) => {
@@ -308,6 +314,66 @@ savePreferences: asyncHandler(async (req: Request, res: Response) => {
     });
     res.json({ success: true, ratings });
   }),
+
+  submitRoleRequest: asyncHandler(async (req: Request, res: Response) => {
+    const { portfolio, software, bio, message } = z.object({
+      portfolio: z.string()
+        .url('Portfolio must be a valid URL')
+        .max(300)
+        .refine(v => {
+  try {
+    const u = new URL(v);
+    if (u.protocol !== 'https:') return false;
+    const host = u.hostname;
+    // Must have at least one dot, no internal IPs, no localhost
+    if (!host.includes('.')) return false;
+    if (host === 'localhost') return false;
+    if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.)/.test(host)) return false;
+    // TLD must be at least 2 chars after the last dot
+    const tld = host.split('.').pop();
+    if (!tld || tld.length < 2) return false;
+    return true;
+  } catch { return false; }
+}, 'Portfolio must be a valid public https:// URL (e.g. https://behance.net/yourname)'),
+      software: z.string().min(2).max(200).regex(/^[a-zA-Z0-9 ,./&+()-]+$/, 'Software contains invalid characters'),
+      bio:      z.string().min(30).max(500),
+      message:  z.string().max(500).optional(),
+    }).parse(req.body);
+
+    const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+    if (!user) throw new AppError('User not found', 404);
+    if (user.role !== 'BUYER') throw new AppError('Only buyers can apply to become a creator', 400);
+
+    const existing = await prisma.roleRequest.findFirst({
+      where: { userId: req.user!.id, status: 'PENDING' },
+    });
+    if (existing) throw new AppError('You already have a pending application', 409);
+
+    const request = await prisma.roleRequest.create({
+      data: { userId: req.user!.id, portfolio, software, bio, message: message ?? null },
+    });
+
+    await emailService.roleRequestSubmitted(user.email, user.name ?? 'there').catch(() => {});
+
+    if (process.env.ADMIN_EMAIL) {
+      await emailService.newRoleRequestAdmin(
+        process.env.ADMIN_EMAIL,
+        user.name ?? 'Unknown',
+        user.email,
+        `Portfolio: ${portfolio}\nSoftware: ${software}\nWhy FLOWVA: ${bio}${message ? `\nNote: ${message}` : ''}`,
+      ).catch(() => {});
+    }
+
+    res.status(201).json({ success: true, request });
+  }),
+
+  getRoleRequestStatus: asyncHandler(async (req: Request, res: Response) => {
+    const request = await prisma.roleRequest.findFirst({
+      where: { userId: req.user!.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ success: true, request: request ?? null });
+  }),
 };
 
 function optionalAuth(req: Request, _res: Response, next: NextFunction): void {
@@ -331,6 +397,7 @@ router.get('/creators/:id/ratings',  userController.getCreatorRatings);
 router.use(authenticate);
 router.put('/profile',               userController.updateProfile);
 router.post('/avatar',               uploadRateLimit, avatarUpload.single('avatar'), userController.uploadAvatar);
+router.delete('/avatar',             userController.deleteAvatar);
 router.post('/change-password',      userController.changePassword);
 router.get('/orders',                userController.getOrders);
 router.delete('/account',            userController.deleteAccount);
@@ -346,5 +413,7 @@ router.patch('/notifications/read', notificationController.markAllRead);
 router.get('/favourites',        userController.getFavourites);
 router.post('/favourites',       userController.addFavourite);
 router.delete('/favourites/:id', userController.removeFavourite);
+router.post('/role-request', generalRateLimit, userController.submitRoleRequest);
+router.get('/role-request',   userController.getRoleRequestStatus);
 
 export default router;

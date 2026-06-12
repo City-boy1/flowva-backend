@@ -22,8 +22,8 @@ const storage = multer.diskStorage({
 
 // Images/PDFs under 10 MB stay in memory; large files go to disk
 const mem = multer({
-  storage,                                    // disk for everything
-  limits: { fileSize: 100 * 1024 * 1024 },
+  storage,
+  limits: { fileSize: 70 * 1024 * 1024 }, // hard cap at multer level — anything bigger is rejected before upload completes
   fileFilter: (_req, file, cb) => {
     const allowed = [
       'video/mp4', 'video/webm', 'video/quicktime',
@@ -47,6 +47,8 @@ router.patch('/:id/unpublish',  authenticate, requireRole('ADMIN'), templateCont
 router.delete('/:id/permanent', authenticate, requireRole('ADMIN'), templateController.permanentDelete);
 router.post('/:id/purchase',    authenticate, paymentRateLimit,     templateController.purchase);
 router.get('/:id/download-token', authenticate, templateController.generateDownloadToken);
+router.post('/:id/rate',    authenticate, templateController.rateTemplate);
+router.get('/:id/ratings',  templateController.getTemplateRatings);
 router.get('/:id/download', templateController.downloadWithToken);
 router.get('/:id/download', downloadRateLimit, templateController.downloadWithToken);
 export default router;

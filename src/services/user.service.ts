@@ -29,6 +29,28 @@ export const userService = {
     });
   },
 
+  async deleteAvatar(userId: string): Promise<void> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { avatarUrl: true },
+  });
+
+  if (user?.avatarUrl) {
+    // Extract Cloudinary public_id from the URL
+    // Cloudinary URLs follow: .../upload/v123456/{folder}/{public_id}.{ext}
+    const match = user.avatarUrl.match(/\/upload\/(?:v\d+\/)?(.+)\.[a-z]+$/i);
+    if (match?.[1]) {
+      const { v2: cloudinary } = await import('cloudinary');
+      await cloudinary.uploader.destroy(match[1]).catch(() => {});
+    }
+  }
+
+    await prisma.user.update({
+    where: { id: userId },
+    data: { avatarUrl: null },
+    });
+  },
+
   async changePassword(userId: string, currentPassword: string, newPassword: string) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new AppError('User not found', 404);

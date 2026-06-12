@@ -54,18 +54,19 @@ export const tutorialController = {
     });
   }),
 
-  list: asyncHandler(async (req: Request, res: Response) => {
-const { category, software, page, limit, status } =
+ list: asyncHandler(async (req: Request, res: Response) => {
+const { category, software, page, limit, status, creatorId } =
   req.query as Record<string, string>;
 
     const queryStatus =
-      req.user?.role === 'ADMIN'
+      req.user?.role === 'ADMIN' || req.user?.id === creatorId
         ? status
         : undefined;
 
 const result = await tutorialService.list({
   category: software || category,   // frontend sends 'software', fallback to 'category'
   status: queryStatus,
+  creatorId,
   page: +page || 1,
   limit: Math.min(+limit || 20, 100),
 });

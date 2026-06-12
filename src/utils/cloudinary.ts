@@ -69,7 +69,7 @@ export async function uploadToCloudinary(
   folder: string,
   options: Record<string, any> = {},
 ): Promise<{ url: string; publicId: string; eager?: any[] }> {
-  const TIMEOUT_MS = 660_000; // 11 min — covers 200 MB video on free-tier upload speeds
+  const TIMEOUT_MS = typeof source === 'string' ? 660_000 : 60_000; // 60s for image buffers, 11min for video files
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new AppError('Cloudinary upload timed out. Try a smaller file.', 504)),
@@ -86,11 +86,12 @@ export async function uploadToCloudinary(
       // File path → use upload() which reads the file stream itself
       cloudinary.uploader.upload(source, {
         folder:     `flowva/${folder}`,
-        chunk_size: 6_000_000,   // 6 MB chunks — enables resumable upload on Cloudinary's end
-        timeout:    660_000,     // SDK-level timeout (ms), separate from your Promise timer
+        chunk_size: 6_000_000,
+        timeout:    660_000,
         ...options,
       }, done);
-      // Buffer → upload_stream (images, small PDFs)
+    } else {
+      // Buffer → upload_stream (images, avatars, small PDFs)
       cloudinary.uploader.upload_stream({ folder: `flowva/${folder}`, ...options }, done).end(source);
     }
   });

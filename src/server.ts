@@ -132,8 +132,7 @@ app.use('/api/messages', messageRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/tutorials', tutorialRoutes);
 // Keep-alive for free tier (prevents cold starts killing long uploads)
-app.get('/ping', (_req, res) => res.json({ ok: true }));
-// ─── Errors ───────────────────────────────────────────────────────────────────
+app.get('/ping', (_req, res) => res.send('ok'));// ─── Errors ───────────────────────────────────────────────────────────────────
 app.use(notFoundHandler);
 app.use(errorHandler);
 

@@ -39,8 +39,10 @@ export const templateController = {
   list: asyncHandler(async (req: Request, res: Response) => {
     const { category, search, page, limit, sort, creatorId, status } = req.query as Record<string, string>;
     // Admins can filter by status; public always gets APPROVED only (handled in service)
-    const queryStatus = req.user?.role === 'ADMIN' ? status : undefined;
-    const result = await templateService.list({
+    const queryStatus =
+      req.user?.role === 'ADMIN' || req.user?.id === creatorId
+      ? status
+      : undefined;    const result = await templateService.list({
       category, search, creatorId, status: queryStatus,
       page: +page || 1, limit: +limit || 20, sort,
     });
@@ -135,6 +137,26 @@ export const templateController = {
   const result = await templateService.purchase(req.params.id, req.user!, callbackUrl);
   res.json({ success: true, ...result });
 }),
+
+rateTemplate: asyncHandler(async (req: Request, res: Response) => {
+    const { orderId, score, review } = z.object({
+      orderId: z.string(),
+      score:   z.number().int().min(1).max(5),
+      review:  z.string().max(500).optional(),
+    }).parse(req.body);
+
+    const result = await templateService.rateTemplate(
+      req.params.id,
+      req.user!.id,
+      { orderId, score, review }
+    );
+    res.status(201).json({ success: true, ...result });
+  }),
+
+  getTemplateRatings: asyncHandler(async (req: Request, res: Response) => {
+    const ratings = await templateService.getTemplateRatings(req.params.id);
+    res.json({ success: true, ratings });
+  }),
 
 // After the existing `download` handler, add:
 

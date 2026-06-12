@@ -1,0 +1,1 @@
+export const PAYMENTS_ENABLED = process.env.PAYMENTS_ENABLED === 'true';

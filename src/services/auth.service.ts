@@ -210,7 +210,7 @@ export const authService = {
 
   async forgotPassword(email: string) {
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) return;
+    if (!user) throw new AppError('No account found with that email address', 404);
 
     const token  = generateToken();
     const expiry = new Date(Date.now() + 60 * 60 * 1000);
@@ -220,9 +220,21 @@ export const authService = {
       data:  { passwordResetToken: hashToken(token), passwordResetExpiry: expiry },
     });
 
-    await emailService.passwordReset(email, token);
+    try {
+      await emailService.passwordReset(email, token);
+    } catch (err) {
+      logger.error('Password reset email failed', {
+        userId: user.id,
+        error:  (err as Error).message,
+      });
+      // Roll back the token so user can try again
+      await prisma.user.update({
+        where: { id: user.id },
+        data:  { passwordResetToken: null, passwordResetExpiry: null },
+      });
+      throw new AppError('Failed to send reset email. Please try again later.', 500);
+    }
   },
-
   async resetPassword(token: string, newPassword: string) {
     const hashed = hashToken(token);
     const user   = await prisma.user.findFirst({
@@ -260,14 +272,24 @@ export const authService = {
 
   async resendVerification(email: string) {
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user || user.emailVerified) return;
+    if (!user) throw new AppError('No account found with that email address', 404);
+    if (user.emailVerified) throw new AppError('This account is already verified', 400);
 
     const verifyToken = generateToken();
     await prisma.user.update({
       where: { id: user.id },
       data:  { emailVerifyToken: hashToken(verifyToken) },
     });
-    await emailService.verifyEmail(user.email, verifyToken);
+
+    try {
+      await emailService.verifyEmail(user.email, verifyToken);
+    } catch (err) {
+      logger.error('Resend verification email failed', {
+        userId: user.id,
+        error:  (err as Error).message,
+      });
+      throw new AppError('Failed to send verification email. Please try again later.', 500);
+    }
   },
 };
 

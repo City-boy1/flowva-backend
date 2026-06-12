@@ -32,6 +32,7 @@ model User {
   commissions         Commission[]
   wallet              CreatorWallet?
   favourites          Favourite[]
+  templateInterests TemplateInterest[]
   followers           Follow[]       @relation("UserFollowers")
   following           Follow[]       @relation("UserFollowing")
   notifications       Notification[]
@@ -42,7 +43,9 @@ model User {
   projects            Project[]
   ratingsReceived     Rating[]       @relation("RatingsReceived")
   ratingsGiven        Rating[]       @relation("RatingsGiven")
+  templateRatingsGiven TemplateRating[] @relation("TemplateRatingsGiven")
   refreshTokens       RefreshToken[]
+  roleRequests        RoleRequest[]
 
   @@index([email])
   @@index([role])
@@ -66,15 +69,15 @@ model RefreshToken {
 }
 
 model PayoutSetting {
-  id            String       @id @default(cuid())
-  userId        String       @unique
-  primaryMethod PayoutMethod
-  isVerified    Boolean      @default(false)
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-  solanaAddress String
-  helioPaylinkId String? 
-  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String       @id @default(cuid())
+  userId         String       @unique
+  primaryMethod  PayoutMethod
+  isVerified     Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  solanaAddress  String
+  helioPaylinkId String?
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model CreatorWallet {
@@ -108,6 +111,7 @@ model Order {
   creator         User        @relation("CreatorOrders", fields: [creatorId], references: [id])
   payment         Payment?
   rating          Rating?
+  templateRating  TemplateRating? @relation("TemplateRatingOrder")
 
   @@index([buyerId])
   @@index([creatorId])
@@ -236,6 +240,22 @@ model Rating {
   @@index([raterId])
 }
 
+model TemplateRating {
+  id              String   @id @default(cuid())
+  raterId         String
+  mongoTemplateId String
+  orderId         String   @unique
+  score           Int
+  review          String?
+  createdAt       DateTime @default(now())
+  rater           User     @relation("TemplateRatingsGiven", fields: [raterId], references: [id], onDelete: Cascade)
+  order           Order    @relation("TemplateRatingOrder", fields: [orderId], references: [id])
+
+  @@unique([raterId, mongoTemplateId])
+  @@index([mongoTemplateId])
+  @@index([raterId])
+}
+
 model Notification {
   id         String   @id @default(cuid())
   userId     String
@@ -332,4 +352,32 @@ enum WithdrawalStatus {
   PROCESSING
   COMPLETED
   FAILED
+}
+model RoleRequest {
+  id              String    @id @default(cuid())
+  userId          String
+  status          String    @default("PENDING")
+  portfolio       String?
+  software        String?
+  bio             String?
+  message         String?
+  rejectionReason String?
+  actionedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+}
+
+model TemplateInterest {
+  id              String   @id @default(cuid())
+  userId          String
+  mongoTemplateId String
+  createdAt       DateTime @default(now())
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, mongoTemplateId])
+  @@index([mongoTemplateId])
 }

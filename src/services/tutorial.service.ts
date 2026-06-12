@@ -89,17 +89,21 @@ return Tutorial.create({
   async list(query: {
     category?: string;
     status?: string;
+    creatorId?: string;
     page?: number;
     limit?: number;
   }) {
 
     const filter: Record<string, any> = {};
 
-    // Public users only see APPROVED
-    filter.status = query.status ?? 'APPROVED';
+    filter.status = query.status ?? (query.creatorId ? { $ne: 'REJECTED' } : 'APPROVED');
 
     if (query.category) {
       filter.category = query.category;
+    }
+
+    if (query.creatorId) {
+      filter.creatorId = query.creatorId;
     }
 
     const page = query.page || 1;

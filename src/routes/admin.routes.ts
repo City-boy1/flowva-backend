@@ -47,7 +47,7 @@ const adminService = {
 
   // ── Overview stats ────────────────────────────────────────────────────────
   async getStats() {
-    const [users, creators, completedOrders, revenue, pendingTemplates, pendingTutorials, pendingProjects] =
+    const [users, creators, completedOrders, revenue, pendingTemplates, pendingTutorials, pendingProjects, pendingRoleRequests] =
       await Promise.all([
         prisma.user.count(),
         prisma.user.count({ where: { role: 'CREATOR' } }),
@@ -56,6 +56,7 @@ const adminService = {
         Template.countDocuments({ status: 'PENDING' }),
         Tutorial.countDocuments({ status: 'PENDING' }),
         prisma.project.count({ where: { status: 'PENDING' as any } }),
+        prisma.roleRequest.count({ where: { status: 'PENDING' } }),
       ]);
     return {
       users,
@@ -66,6 +67,7 @@ const adminService = {
       pendingTemplates,
       pendingTutorials,
       pendingProjects,
+      pendingRoleRequests,
     };
   },
 
@@ -101,6 +103,93 @@ const adminService = {
     if (user.status !== 'SUSPENDED') throw new AppError('User is not suspended', 400);
     return prisma.user.update({ where: { id: userId }, data: { status: 'ACTIVE' } });
   },
+
+  // ── Role Requests ─────────────────────────────────────────
+async getRoleRequests(status?: string) {
+  const rows = await prisma.roleRequest.findMany({
+  where: status ? { status } : {},
+  orderBy: { createdAt: 'desc' },
+  take: 100,
+  select: {
+    id:              true,
+    userId:          true,
+    status:          true,
+    portfolio:       true,
+    software:        true,
+    bio:             true,
+    message:         true,
+    rejectionReason: true,
+    actionedAt:      true,
+    createdAt:       true,
+    updatedAt:       true,
+    user: { select: { id: true, name: true, email: true, role: true, createdAt: true } },
+  },
+});
+  // Sanitise portfolio URL before sending to admin client —
+  // only allow https:// links so no javascript:, data:, or http: slips through
+  return rows.map(r => ({
+    ...r,
+    portfolio: (() => {
+  try {
+    const u = new URL(r.portfolio ?? '');
+    const host = u.hostname;
+    if (u.protocol !== 'https:') return null;
+    if (!host.includes('.')) return null;
+    if (host === 'localhost') return null;
+    if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.)/.test(host)) return null;
+    const tld = host.split('.').pop();
+    if (!tld || tld.length < 2) return null;
+    return r.portfolio;
+  } catch { return null; }
+})(),
+  }));
+},
+
+async approveRoleRequest(requestId: string) {
+  const req = await prisma.roleRequest.findUnique({
+    where: { id: requestId },
+    include: { user: true },
+  });
+  if (!req) throw new AppError('Request not found', 404);
+  if (req.status !== 'PENDING') throw new AppError('Request already actioned', 400);
+
+  await prisma.$transaction([
+    prisma.user.update({ where: { id: req.userId }, data: { role: 'CREATOR' } }),
+    prisma.roleRequest.update({ where: { id: requestId }, data: { status: 'APPROVED', actionedAt: new Date() } }),
+    prisma.creatorWallet.upsert({
+      where: { userId: req.userId },
+      create: { userId: req.userId, totalEarned: 0, pending: 0 },
+      update: {},
+    }),
+  ]);
+
+  await emailService.roleChanged(req.user.email, req.user.name ?? 'there', 'BUYER', 'CREATOR').catch(() => {});
+  return req;
+},
+
+async rejectRoleRequest(requestId: string, reason: string) {
+  const req = await prisma.roleRequest.findUnique({
+    where: { id: requestId },
+    include: { user: true },
+  });
+  if (!req) throw new AppError('Request not found', 404);
+  if (req.status !== 'PENDING') throw new AppError('Request already actioned', 400);
+
+  await prisma.roleRequest.update({
+    where: { id: requestId },
+    data: { status: 'REJECTED', rejectionReason: reason, actionedAt: new Date() },
+  });
+
+  await emailService.roleRequestRejected(req.user.email, req.user.name ?? 'there', reason).catch(() => {});
+  return req;
+},
+
+async deleteRoleRequest(requestId: string) {
+  const req = await prisma.roleRequest.findUnique({ where: { id: requestId } });
+  if (!req) throw new AppError('Request not found', 404);
+  if (req.status === 'APPROVED') throw new AppError('Cannot delete an approved request', 400);
+  await prisma.roleRequest.delete({ where: { id: requestId } });
+},
 
   // ── Commissions ───────────────────────────────────────────────────────────
   async getCommissions(disbursed?: boolean) {
@@ -250,6 +339,47 @@ router.patch('/users/:id/suspend', asyncHandler(async (req: Request, res: Respon
 router.patch('/users/:id/unsuspend', asyncHandler(async (req: Request, res: Response) => {
   const user = await adminService.unsuspendUser(req.params.id);
   res.json({ success: true, user });
+}));
+
+router.patch('/users/:id/role', asyncHandler(async (req: Request, res: Response) => {
+  const { role } = z.object({ role: z.enum(['BUYER', 'CREATOR']) }).parse(req.body);
+  const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!user) throw new AppError('User not found', 404);
+  if (user.role === 'ADMIN') throw new AppError('Cannot modify an admin account', 403);
+  const updated = await prisma.user.update({ where: { id: req.params.id }, data: { role } });
+  await emailService.roleChanged(
+    updated.email,
+    updated.name ?? 'there',
+    user.role,
+    role,
+  ).catch(() => {});
+  res.json({ success: true, user: updated });
+}));
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ROLE REQUESTS
+// ════════════════════════════════════════════════════════════════════════════
+
+router.get('/role-requests', asyncHandler(async (req: Request, res: Response) => {
+  const status = req.query.status as string | undefined;
+  const requests = await adminService.getRoleRequests(status);
+  res.json({ success: true, requests });
+}));
+
+router.post('/role-requests/:id/approve', asyncHandler(async (req: Request, res: Response) => {
+  const result = await adminService.approveRoleRequest(req.params.id);
+  res.json({ success: true, result });
+}));
+
+router.post('/role-requests/:id/reject', asyncHandler(async (req: Request, res: Response) => {
+  const { reason } = z.object({ reason: z.string().min(5) }).parse(req.body);
+  const result = await adminService.rejectRoleRequest(req.params.id, reason);
+  res.json({ success: true, result });
+}));
+
+router.delete('/role-requests/:id', asyncHandler(async (req: Request, res: Response) => {
+  await adminService.deleteRoleRequest(req.params.id);
+  res.json({ success: true });
 }));
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -19,7 +19,20 @@ const tutorialStorage = multer.diskStorage({
 
 const tutorialUpload = multer({
   storage: tutorialStorage,
-  limits: { fileSize: 100 * 1024 * 1024 },
+  limits: { fileSize: 70 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.fieldname === 'video') {
+      const allowed = ['video/mp4', 'video/webm', 'video/quicktime'];
+      if (allowed.includes(file.mimetype)) return cb(null, true);
+      return cb(new Error('Video must be MP4, WebM, or MOV'));
+    }
+    if (file.fieldname === 'thumbnail') {
+      const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+      if (allowed.includes(file.mimetype)) return cb(null, true);
+      return cb(new Error('Thumbnail must be JPG, PNG, or WebP'));
+    }
+    cb(new Error('Unexpected field'));
+  },
 }).fields([
   { name: 'video',     maxCount: 1 },
   { name: 'thumbnail', maxCount: 1 },
