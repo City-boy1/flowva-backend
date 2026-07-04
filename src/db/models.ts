@@ -10,8 +10,9 @@ export interface IProject extends Document {
   budget: number;
   currency: string;
   deadline: Date;
-  attachments: { url: string; publicId: string; name: string }[];
-  createdAt: Date;
+  software?: string;
+  experience?: string;
+  attachments: { url: string; publicId: string; name: string }[];  createdAt: Date;
 }
 
 const ProjectSchema = new Schema<IProject>({
@@ -24,6 +25,8 @@ const ProjectSchema = new Schema<IProject>({
   budget: { type: Number, required: true },
   currency: { type: String, default: 'USD' },
   deadline: Date,
+  software: { type: String, default: '' },
+  experience: { type: String, default: '' },
   attachments: [{ url: String, publicId: String, name: String }],
 }, { timestamps: true });
 
@@ -81,6 +84,7 @@ export interface ITutorial extends Document {
   description: string;
   videoUrl: string;
   videoPublicId: string;
+  youtubeUrl?: string;
   thumbnailUrl: string;
   duration: number;
   category: string;
@@ -103,8 +107,9 @@ const TutorialSchema = new Schema<ITutorial>({
   templateId: { type: String, default: null, index: true },
   title: { type: String, required: true },
   description: { type: String, maxlength: 2000 },
-  videoUrl: { type: String, required: true },
-  videoPublicId: { type: String, required: true },
+  videoUrl: { type: String, default: '' },
+  videoPublicId: { type: String, default: '' },
+  youtubeUrl: { type: String, default: '' },
   thumbnailUrl: String,
   duration: Number,
   category: String,
@@ -134,3 +139,62 @@ rejectionReason: {
 }, { timestamps: true });
 
 export const Tutorial = mongoose.model<ITutorial>('Tutorial', TutorialSchema);
+
+export interface IJob extends Document {
+  pgJobId: string;
+  title: string;
+  company: string;
+  description: string;
+  fields: string[];
+  field: string;
+  location: string;
+  city?: string;
+  salary?: { min?: number; max?: number; period: string; currency: string };
+  website?: string;
+  postedBy: string;
+  jobType: string;
+}
+
+const JobSchema = new Schema<IJob>({
+  pgJobId:     { type: String, required: true, unique: true },
+  title:       { type: String, required: true },
+  company:     { type: String, required: true },
+  description: { type: String, required: true },
+  fields:      [String],
+  field:       { type: String, default: '' },
+  location:    { type: String, required: true },
+  city:        { type: String, default: '' },
+  salary:      {
+    min:      Number,
+    max:      Number,
+    period:   { type: String, default: 'year' },
+    currency: { type: String, default: 'USD' },
+  },
+  website:  { type: String, default: '' },
+  postedBy: { type: String, required: true },
+  jobType:  { type: String, required: true },
+}, { timestamps: true });
+
+export const JobContent = mongoose.model<IJob>('JobContent', JobSchema);
+
+export interface IJobApplication extends Document {
+  pgApplicationId: string;
+  pgJobId: string;
+  userId: string;
+  coverLetter?: string;
+  portfolioUrl?: string;
+  field?: string;
+  appliedAt: Date;
+}
+
+const JobApplicationSchema = new Schema<IJobApplication>({
+  pgApplicationId: { type: String, required: true, unique: true },
+  pgJobId:         { type: String, required: true, index: true },
+  userId:          { type: String, required: true, index: true },
+  coverLetter:     { type: String, default: '' },
+  portfolioUrl:    { type: String, default: '' },
+  field:           { type: String, default: '' },
+  appliedAt:       { type: Date, default: Date.now },
+}, { timestamps: true });
+
+export const JobApplicationContent = mongoose.model<IJobApplication>('JobApplicationContent', JobApplicationSchema);

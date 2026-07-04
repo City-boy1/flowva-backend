@@ -353,4 +353,25 @@ export const emailService = {
       </div>` : ''}
       <a href="${BASE}/admin.html#requests" class="cta">Review Application →</a>
     `)),
+
+    contactForm: (name: string, email: string, subject: string, message: string, username?: string) =>
+  send(
+    process.env.ADMIN_EMAIL || 'flowva3@gmail.com',
+    `[Contact] ${subject} — FLOWVA`,
+    layout(`
+      <div class="card-title">📩 New Contact Message</div>
+      <div class="card-sub">Someone submitted the contact form on FLOWVA.</div>
+      <div class="info-box">
+        <div class="info-row"><span class="info-label">Name</span><span class="info-value">${esc(name)}</span></div>
+        <div class="info-row"><span class="info-label">Email</span><span class="info-value accent">${esc(email)}</span></div>
+        <div class="info-row"><span class="info-label">Subject</span><span class="info-value">${esc(subject)}</span></div>
+        ${username ? `<div class="info-row"><span class="info-label">Username</span><span class="info-value">${esc(username)}</span></div>` : ''}
+      </div>
+      <div style="background:#1e293b;border-left:3px solid #3b82f6;border-radius:0 6px 6px 0;padding:14px 16px;margin:16px 0">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">Message</div>
+        <div style="color:#cbd5e1;font-size:13px;line-height:1.6">${esc(message)}</div>
+      </div>
+      <p class="note">Reply directly to <a href="mailto:${esc(email)}" style="color:#3b82f6">${esc(email)}</a> to respond to this user.</p>
+    `)
+  ),
 };

@@ -24,6 +24,9 @@ import payoutRoutes from './routes/payout.routes.js';
 import messageRoutes from './routes/message.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import tutorialRoutes from './routes/tutorial.routes.js';
+import jobRoutes      from './routes/job.routes.js';
+import contactRouter from './routes/contact.routes.js';
+import discordRoutes from './routes/discord.routes.js';
 import { startPayoutWorker } from './queues/payout.queue.js';
 
 validateEnv();
@@ -97,7 +100,9 @@ app.use(cors({
   ],
 }));
 app.use(hpp());
-app.use(globalRateLimit);
+if (process.env.NODE_ENV === 'production') {
+  app.use(globalRateLimit);
+}
 
 // ─── Body / Cookies ──────────────────────────────────────────────────────────
 // Raw body preserved for webhook signature verification
@@ -131,6 +136,9 @@ app.use('/api/payouts', payoutRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/tutorials', tutorialRoutes);
+app.use('/api/jobs',      jobRoutes);
+app.use('/api/contact', contactRouter);
+app.use('/api/discord', discordRoutes);
 // Keep-alive for free tier (prevents cold starts killing long uploads)
 app.get('/ping', (_req, res) => res.send('ok'));// ─── Errors ───────────────────────────────────────────────────────────────────
 app.use(notFoundHandler);
@@ -140,7 +148,7 @@ app.use(errorHandler);
 async function start() {
   await connectPrisma();
   await connectMongo();
-  startPayoutWorker();
+  if (process.env.NODE_ENV === 'production') startPayoutWorker();
   app.listen(PORT, () => logger.info(`FLOWVA API running on port ${PORT}`));
 }
 

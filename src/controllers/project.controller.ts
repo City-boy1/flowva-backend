@@ -4,13 +4,15 @@ import { projectService } from '../services/project.service.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 
 const createSchema = z.object({
-  title: z.string().min(5).max(200),
+  title: z.string().min(4).max(200),
   description: z.string().min(20).max(5000),
   category: z.string().optional(),
   skills: z.array(z.string()).default([]),
   budget: z.number().positive(),
   currency: z.string().default('USD'),
   deadline: z.string(),
+  software: z.string().nullable().optional(),
+  experience: z.string().nullable().optional(),
   attachments: z.array(z.string().url()).default([]),
 });
 
@@ -22,16 +24,22 @@ const bidSchema = z.object({
 });
 
 export const projectController = {
-  create: asyncHandler(async (req: Request, res: Response) => {
-    const parsed = createSchema.parse(req.body);
-    const data = { ...parsed, category: parsed.category ?? '' };
-    const result = await projectService.create(req.user!.id, data);
+   create: asyncHandler(async (req: Request, res: Response) => {
+  const parsed = createSchema.parse(req.body);
+  const data = {
+    ...parsed,
+    category: parsed.category ?? '',
+    software: parsed.software ?? undefined,
+    experience: parsed.experience ?? undefined,
+  };
+  const result = await projectService.create(req.user!.id, data);
     res.status(201).json({ success: true, project: result });
   }),
 
-  list: asyncHandler(async (req: Request, res: Response) => {
-    const { category, search, page, limit, scope, role } = req.query as Record<string, string>;
-    const userId = req.user?.id;
+   list: asyncHandler(async (req: Request, res: Response) => {
+   const { category, search, page, limit, scope, role, userId: queryUserId } = req.query as Record<string, string>;
+    const userId = queryUserId || req.user?.id;
+
     const result = await projectService.list({ category, search, page: +page || 1, limit: +limit || 20, scope, userId, role });
     res.json({ success: true, projects: result });
   }),
@@ -97,4 +105,20 @@ openDispute: asyncHandler(async (req: Request, res: Response) => {
   const project = await projectService.openDispute(req.params.id, req.user!.id, reason);
   res.json({ success: true, project });
 }),
+
+fundEscrow: asyncHandler(async (req: Request, res: Response) => {
+    const { projectId, bidId, amount, method, reference } = z.object({
+      projectId: z.string(),
+      bidId: z.string(),
+      amount: z.number().positive(),
+      method: z.string(),
+      reference: z.string(),
+    }).parse(req.body);
+
+    const result = await projectService.fundEscrow({
+      projectId, bidId, amount, method, reference,
+      clientId: req.user!.id,
+    });
+    res.status(201).json({ success: true, ...result });
+  }),
 };

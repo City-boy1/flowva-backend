@@ -8,6 +8,8 @@ export const projectService = {
     title: string; description: string; category: string;
     skills: string[]; budget: number; currency: string;
     deadline: string;
+    software?: string;
+    experience?: string;
     attachments?: string[];
   }) {
     const pgProject = await prisma.project.create({
@@ -38,18 +40,20 @@ export const projectService = {
     const limit = Math.min(query.limit || 20, 50);
     const skip = (page - 1) * limit;
 
-    const { scope, userId } = query;
+    const { scope } = query;
+    const userId = query.userId;
     const openProjects = await prisma.project.findMany({
       where: scope === 'dashboard' && userId && query.role === 'creator'
         ? { bids: { some: { creatorId: userId } } }
         : scope === 'dashboard' && userId && query.role === 'client'
-        ? { clientId: userId }
-        : scope === 'admin' ? {}
+        ? { clientId: userId, status: { in: ['PENDING', 'OPEN', 'IN_PROGRESS', 'COMPLETED', 'DISPUTED', 'CANCELLED'] } }
+                : scope === 'admin' ? {}
         : { status: 'OPEN' },
       orderBy: { createdAt: 'desc' },
       skip, take: limit,
     });
 
+    console.log('FOUND PROJECTS:', openProjects.length, openProjects.map(p => ({ id: p.id, status: p.status, clientId: p.clientId })));
     const pgIds = openProjects.map((p) => p.id);
     const contents = await ProjectContent.find({ pgProjectId: { $in: pgIds } }).lean();
     const contentMap = Object.fromEntries(contents.map((c) => [c.pgProjectId, c]));
@@ -274,5 +278,87 @@ export const projectService = {
       prisma.escrow.updateMany({ where: { orderId: order.id }, data: { status: 'DISPUTED' } }),
     ]);
     return project;
+  },
+
+  async fundEscrow(data: {
+    projectId: string;
+    bidId: string;
+    amount: number;
+    method: string;
+    reference: string;
+    clientId: string;
+  }) {
+    const { projectId, bidId, amount, method, reference, clientId } = data;
+
+    // Validate project + bid belong together and client owns the project
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      include: { bids: { where: { id: bidId } } },
+    });
+    if (!project) throw new AppError('Project not found', 404);
+    if (project.clientId !== clientId) throw new AppError('Forbidden', 403);
+    if (project.status !== 'IN_PROGRESS') throw new AppError('Project must be IN_PROGRESS (bid accepted) before funding escrow', 400);
+
+    const bid = project.bids[0];
+    if (!bid) throw new AppError('Bid not found on this project', 404);
+    if (bid.status !== 'ACCEPTED') throw new AppError('Bid is not accepted', 400);
+
+    const creator = await prisma.user.findUnique({ where: { id: bid.creatorId } });
+    if (!creator) throw new AppError('Creator not found', 404);
+
+    // Idempotency: if order + escrow already exist for this bid, return existing
+    const existingOrder = await prisma.order.findFirst({
+      where: { mongoBidId: bidId },
+      include: { escrow: true },
+    });
+    if (existingOrder) return { order: existingOrder, escrow: existingOrder.escrow };
+
+    // Create Order + Payment + Escrow atomically
+    const order = await prisma.order.create({
+      data: {
+        buyerId: clientId,
+        creatorId: bid.creatorId,
+        mongoBidId: bidId,
+        type: 'PROJECT',
+        amount,
+        currency: 'USD',
+        status: 'PAID',
+      },
+    });
+
+    const [escrow, payment] = await prisma.$transaction([
+      prisma.escrow.create({
+        data: {
+          orderId: order.id,
+          amount,
+          currency: 'USD',
+          status: 'HELD',
+        },
+      }),
+      prisma.payment.create({
+        data: {
+          orderId: order.id,
+          userId: clientId,
+          provider: 'HELIO',
+          providerRef: reference,
+          amount,
+          currency: 'USD',
+          status: 'SUCCESS',
+          metadata: { method },
+        },
+      }),
+    ]);
+
+    // Notify creator to begin work
+    await prisma.notification.create({
+      data: {
+        userId: bid.creatorId,
+        type: 'ESCROW_FUNDED',
+        title: 'Payment received — you can start work',
+        message: `The client has funded escrow for the project. Deliver by the agreed deadline.`,
+      },
+    });
+
+    return { order, escrow, payment };
   },
 };

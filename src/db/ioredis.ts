@@ -15,10 +15,12 @@ _connection = new IORedis({
   enableReadyCheck: false,
   connectTimeout: 30000,
   commandTimeout: 60000,
-  keepAlive: 30000,
+  keepAlive: 0,
   noDelay: true,
-  retryStrategy: (times) => Math.min(times * 2000, 30000),
-  reconnectOnError: (err: Error) => {
+  retryStrategy: (times) => {
+    if (times > 3) return null; // stop retrying after 3 attempts
+    return Math.min(times * 2000, 30000);
+  },  reconnectOnError: (err: Error) => {
     return ['READONLY', 'ECONNRESET', 'ETIMEDOUT'].some((e) => err.message.includes(e));
   },
 });

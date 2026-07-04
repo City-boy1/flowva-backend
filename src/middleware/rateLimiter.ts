@@ -96,10 +96,15 @@ function createMiddleware(getLimiter: () => Ratelimit, label: string, forceIp = 
 
       next();
     } catch (err) {
-      // Redis is down or slow — fail open so the app never crashes
-      logger.error('Rate limiter error (failing open)', { error: (err as Error).message });
+      const msg = (err as Error).message ?? '';
+      logger.error('Rate limiter error (failing open)', { error: msg });
+      // Upstash quota exceeded — always fail open, never block the request
+      if (msg.includes('max_requests_limit') || msg.includes('Usage:')) {
+        return next();
+      }
       next();
     }
+
   };
 }
 let _download: Ratelimit | null = null;

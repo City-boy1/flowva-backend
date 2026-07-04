@@ -36,6 +36,7 @@ export function errorHandler(
 
   // Zod validation
   if (err instanceof ZodError) {
+    logger.error('Zod validation error', { path: req.path, errors: err.errors });
     res.status(422).json({
       success: false,
       message: 'Please check your input and try again.',
