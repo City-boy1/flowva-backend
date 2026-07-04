@@ -66,6 +66,10 @@ export const authService = {
         },
       });
 
+      await tx.groupMembership.create({
+      data: { userId: u.id, group: 'announcements' },
+    });
+
       if (data.role === 'CREATOR') {
         // Initialise display-only earnings tracker
         await tx.creatorWallet.create({

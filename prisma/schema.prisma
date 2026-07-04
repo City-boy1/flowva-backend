@@ -48,6 +48,7 @@ model User {
   roleRequests        RoleRequest[]
   jobs                Job[]
   jobApplications     JobApplication[]
+  groupMemberships GroupMembership[]
 
   @@index([email])
   @@index([role])
