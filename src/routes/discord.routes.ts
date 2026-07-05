@@ -8,7 +8,10 @@ import prisma from '../db/prisma.js';
 import { Redis } from '@upstash/redis';
 
 const router = express.Router();
-const redis = Redis.fromEnv(); // reads UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_URL!,
+  token: process.env.UPSTASH_REDIS_TOKEN!,
+});
 const PRESENCE_TTL_MS = 45_000; // a user "drops off" if no heartbeat in 45s
 
 // ── Rate limiting ──
