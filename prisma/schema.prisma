@@ -50,6 +50,7 @@ model User {
   jobApplications     JobApplication[]
   groupMemberships GroupMembership[]
   chatMessages ChatMessage[]
+  messageReactions MessageReaction[] 
 
   @@index([email])
   @@index([role])
@@ -265,6 +266,18 @@ model ChatMessage {
 
   @@index([group])
   @@index([authorId])
+}
+
+model MessageReaction {
+  id                String   @id @default(cuid())
+  discordMessageId  String
+  userId            String
+  emoji             String
+  createdAt         DateTime @default(now())
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([discordMessageId, userId])
+  @@index([discordMessageId])
 }
 
 model Follow {
