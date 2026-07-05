@@ -196,6 +196,15 @@ router.put('/message/:tab/:messageId/pin', authenticate, asyncHandler(async (req
   res.json({ success: true });
 }));
 
+router.get('/message/:tab/pins', authenticate, asyncHandler(async (req: Request, res: Response) => {
+  const { tab } = req.params;
+  const channelId = CHANNEL_MAP[tab] || CHANNEL_MAP.general;
+  const discordRes = await fetch(`https://discord.com/api/v10/channels/${channelId}/pins`, { headers: botHeaders });
+  const pins = await discordRes.json();
+  const formatted = (pins as any[]).map((m: any) => ({ id: m.id, content: m.content, authorName: m.author?.username || 'Unknown' }));
+  res.json({ pins: formatted });
+}));
+
 router.get('/profile/message/:messageId', authenticate, asyncHandler(async (req: Request, res: Response) => {
   const record = await prisma.chatMessage.findUnique({
     where: { discordMessageId: req.params.messageId },
