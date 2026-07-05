@@ -57,10 +57,9 @@ router.post('/message', authenticate, asyncHandler(async (req: Request, res: Res
     where: { userId_group: { userId: msgUser.id, group: tab } },
   });
   if (!membership) throw new AppError('Join this group before sending messages', 403);
-
   if (!message?.trim()) throw new AppError('Message is required', 400);
 
-  await fetch(WEBHOOK_MAP[tab], {
+  const discordRes = await fetch(`${WEBHOOK_MAP[tab]}?wait=true`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -68,6 +67,43 @@ router.post('/message', authenticate, asyncHandler(async (req: Request, res: Res
       username: dbUser.name,
       avatar_url: dbUser.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(dbUser.name)}&background=${colorForName(dbUser.name)}&color=fff`,
     }),
+  });
+  const discordMsg = await discordRes.json();
+
+  await prisma.chatMessage.create({
+    data: { discordMessageId: discordMsg.id, group: tab, authorId: msgUser.id },
+  });
+
+  res.json({ success: true });
+}));
+
+router.post('/message/:tab/reply', authenticate, asyncHandler(async (req: Request, res: Response) => {
+  const { tab } = req.params;
+  const { message, replyToContent } = req.body;
+  const msgUser = (req as any).user;
+  const dbUser = await prisma.user.findUnique({ where: { id: msgUser.id }, select: { name: true, avatarUrl: true } });
+  if (!dbUser) throw new AppError('User not found', 404);
+  if (!message?.trim()) throw new AppError('Message is required', 400);
+
+  const membership = await prisma.groupMembership.findUnique({
+    where: { userId_group: { userId: msgUser.id, group: tab } },
+  });
+  if (!membership) throw new AppError('Join this group before sending messages', 403);
+
+  const quoted = replyToContent ? `> ${String(replyToContent).slice(0, 100)}\n` : '';
+  const discordRes = await fetch(`${WEBHOOK_MAP[tab]}?wait=true`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      content: `${quoted}${message}`,
+      username: dbUser.name,
+      avatar_url: dbUser.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(dbUser.name)}&background=${colorForName(dbUser.name)}&color=fff`,
+    }),
+  });
+  const discordMsg = await discordRes.json();
+
+  await prisma.chatMessage.create({
+    data: { discordMessageId: discordMsg.id, group: tab, authorId: msgUser.id },
   });
 
   res.json({ success: true });
@@ -107,6 +143,68 @@ router.get('/messages/:tab', authenticate, asyncHandler(async (req: Request, res
   res.json({ messages: formatted });
 }));
 
+router.patch('/message/:tab/:messageId', authenticate, asyncHandler(async (req: Request, res: Response) => {
+  const { tab, messageId } = req.params;
+  const { content } = req.body;
+  const msgUser = (req as any).user;
+
+  const record = await prisma.chatMessage.findUnique({ where: { discordMessageId: messageId } });
+  if (!record || record.authorId !== msgUser.id) throw new AppError('You can only edit your own messages', 403);
+  if (!content?.trim()) throw new AppError('Message content is required', 400);
+
+  await fetch(`${WEBHOOK_MAP[tab]}/messages/${messageId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  res.json({ success: true });
+}));
+
+router.delete('/message/:tab/:messageId', authenticate, asyncHandler(async (req: Request, res: Response) => {
+  const { tab, messageId } = req.params;
+  const msgUser = (req as any).user;
+
+  const record = await prisma.chatMessage.findUnique({ where: { discordMessageId: messageId } });
+  if (!record || record.authorId !== msgUser.id) throw new AppError('You can only delete your own messages', 403);
+
+  await fetch(`${WEBHOOK_MAP[tab]}/messages/${messageId}`, { method: 'DELETE' });
+  await prisma.chatMessage.delete({ where: { discordMessageId: messageId } });
+  res.json({ success: true });
+}));
+
+router.post('/message/:tab/:messageId/react', authenticate, asyncHandler(async (req: Request, res: Response) => {
+  const { tab, messageId } = req.params;
+  const { emoji } = req.body;
+  if (!emoji) throw new AppError('Emoji is required', 400);
+  const channelId = CHANNEL_MAP[tab] || CHANNEL_MAP.general;
+
+  await fetch(`https://discord.com/api/v10/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`, {
+    method: 'PUT',
+    headers: botHeaders,
+  });
+  res.json({ success: true });
+}));
+
+router.put('/message/:tab/:messageId/pin', authenticate, asyncHandler(async (req: Request, res: Response) => {
+  const { tab, messageId } = req.params;
+  const channelId = CHANNEL_MAP[tab] || CHANNEL_MAP.general;
+
+  await fetch(`https://discord.com/api/v10/channels/${channelId}/pins/${messageId}`, {
+    method: 'PUT',
+    headers: botHeaders,
+  });
+  res.json({ success: true });
+}));
+
+router.get('/profile/message/:messageId', authenticate, asyncHandler(async (req: Request, res: Response) => {
+  const record = await prisma.chatMessage.findUnique({
+    where: { discordMessageId: req.params.messageId },
+    include: { author: { select: { name: true, avatarUrl: true, createdAt: true } } },
+  });
+  if (!record) throw new AppError('Not found', 404);
+  res.json(record.author);
+}));
+
 router.get('/memberships', authenticate, asyncHandler(async (req: Request, res: Response) => {
   const memberships = await prisma.groupMembership.findMany({
     where: { userId: (req as any).user.id },
@@ -129,13 +227,4 @@ router.post('/join/:group', authenticate, asyncHandler(async (req: Request, res:
   res.json({ success: true });
 }));
 
-router.get('/profile/:name', authenticate, asyncHandler(async (req: Request, res: Response) => {
-  const { name } = req.params;
-  const user = await prisma.user.findFirst({
-    where: { name },
-    select: { name: true, avatarUrl: true, createdAt: true },
-  });
-  if (!user) throw new AppError('User not found', 404);
-  res.json(user);
-}));
 export default router;

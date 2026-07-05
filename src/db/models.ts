@@ -84,6 +84,7 @@ export interface ITutorial extends Document {
   description: string;
   videoUrl: string;
   videoPublicId: string;
+  youtubeId?: string;
   youtubeUrl?: string;
   thumbnailUrl: string;
   duration: number;
@@ -109,6 +110,7 @@ const TutorialSchema = new Schema<ITutorial>({
   description: { type: String, maxlength: 2000 },
   videoUrl: { type: String, default: '' },
   videoPublicId: { type: String, default: '' },
+  youtubeId: { type: String, default: '' },
   youtubeUrl: { type: String, default: '' },
   thumbnailUrl: String,
   duration: Number,
