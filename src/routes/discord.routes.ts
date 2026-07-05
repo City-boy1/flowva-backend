@@ -384,10 +384,22 @@ router.put('/message/:tab/:messageId/pin', authenticate, asyncHandler(async (req
   const { tab, messageId } = req.params;
   const channelId = CHANNEL_MAP[tab] || CHANNEL_MAP.general;
 
-  await fetch(`https://discord.com/api/v10/channels/${channelId}/pins/${messageId}`, {
+  const discordRes = await fetch(`https://discord.com/api/v10/channels/${channelId}/pins/${messageId}`, {
     method: 'PUT',
     headers: botHeaders,
   });
+
+  if (!discordRes.ok) {
+    const body = await discordRes.text().catch(() => '');
+    console.error('Discord pin failed:', discordRes.status, body);
+    throw new AppError(
+      discordRes.status === 403
+        ? 'Bot is missing permission to pin messages in this channel'
+        : 'Failed to pin message on Discord',
+      502
+    );
+  }
+
   res.json({ success: true });
 }));
 
@@ -395,8 +407,10 @@ router.get('/message/:tab/pins', authenticate, asyncHandler(async (req: Request,
   const { tab } = req.params;
   const channelId = CHANNEL_MAP[tab] || CHANNEL_MAP.general;
   const discordRes = await fetch(`https://discord.com/api/v10/channels/${channelId}/pins`, { headers: botHeaders });
+  if (!discordRes.ok) throw new AppError('Failed to fetch pinned messages', 502);
   const pins = await discordRes.json();
-  const formatted = (pins as any[]).map((m: any) => ({ id: m.id, content: m.content, authorName: m.author?.username || 'Unknown' }));
+  if (!Array.isArray(pins)) throw new AppError('Unexpected response from Discord', 502);
+  const formatted = pins.map((m: any) => ({ id: m.id, content: m.content, authorName: m.author?.username || 'Unknown' }));
   res.json({ pins: formatted });
 }));
 
