@@ -68,7 +68,7 @@ router.post('/message', authenticate, asyncHandler(async (req: Request, res: Res
       avatar_url: dbUser.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(dbUser.name)}&background=${colorForName(dbUser.name)}&color=fff`,
     }),
   });
-  const discordMsg = await discordRes.json();
+  const discordMsg = await discordRes.json() as { id: string };
 
   await prisma.chatMessage.create({
     data: { discordMessageId: discordMsg.id, group: tab, authorId: msgUser.id },
@@ -100,7 +100,7 @@ router.post('/message/:tab/reply', authenticate, asyncHandler(async (req: Reques
       avatar_url: dbUser.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(dbUser.name)}&background=${colorForName(dbUser.name)}&color=fff`,
     }),
   });
-  const discordMsg = await discordRes.json();
+  const discordMsg = await discordRes.json() as { id: string };
 
   await prisma.chatMessage.create({
     data: { discordMessageId: discordMsg.id, group: tab, authorId: msgUser.id },
