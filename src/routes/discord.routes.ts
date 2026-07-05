@@ -406,6 +406,29 @@ router.put('/message/:tab/:messageId/pin', authenticate, asyncHandler(async (req
   res.json({ success: true });
 }));
 
+router.delete('/message/:tab/:messageId/pin', authenticate, asyncHandler(async (req: Request, res: ExpressResponse) => {
+  const { tab, messageId } = req.params;
+  const channelId = CHANNEL_MAP[tab] || CHANNEL_MAP.general;
+
+  const discordRes = await fetch(`https://discord.com/api/v10/channels/${channelId}/pins/${messageId}`, {
+    method: 'DELETE',
+    headers: botHeaders,
+  });
+
+  if (!discordRes.ok) {
+    const body = await discordRes.text().catch(() => '');
+    console.error('Discord unpin failed:', discordRes.status, body);
+    throw new AppError(
+      discordRes.status === 403
+        ? 'Bot is missing permission to unpin messages in this channel'
+        : 'Failed to unpin message on Discord',
+      502
+    );
+  }
+
+  res.json({ success: true });
+}));
+
 router.get('/message/:tab/pins', authenticate, asyncHandler(async (req: Request, res: ExpressResponse) => {
   const { tab } = req.params;
   const channelId = CHANNEL_MAP[tab] || CHANNEL_MAP.general;
