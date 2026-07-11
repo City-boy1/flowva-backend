@@ -31,4 +31,10 @@ export const paymentController = {
     paymentService.handlePaystackWebhook(req.body as Buffer, signature)
       .catch(err => logger.error('Webhook processing failed', { message: err.message }));
   }),
+
+  skrillWebhook: asyncHandler(async (req: Request, res: Response) => {
+    res.sendStatus(200); // ack immediately — Skrill retries status_url on non-200
+    paymentService.handleSkrillWebhook(req.body as Record<string, string>)
+      .catch(err => logger.error('Skrill webhook processing failed', { message: err.message }));
+  }),
 };
