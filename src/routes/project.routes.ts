@@ -24,7 +24,6 @@ router.post('/upload-attachment', authenticate, memUpload.single('file'), asyncH
   res.json({ success: true, url: result.secure_url });
 }));
 
-router.post('/fund-escrow', authenticate, projectController.fundEscrow);
 router.get('/', projectController.list);
 router.get('/:id', projectController.getOne);
 router.post('/', authenticate, projectController.create);
