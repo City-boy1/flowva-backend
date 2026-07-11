@@ -5,11 +5,11 @@ import { asyncHandler } from '../middleware/asyncHandler.js';
 import { AppError } from '../middleware/errorHandler.js';
 import prisma from '../db/prisma.js';
 
-// Solana address: base58, 32–44 chars
-const solanaAddressSchema = z.string()
-  .min(32, 'Wallet address is too short')
-  .max(44, 'Wallet address is too long')
-  .regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'Invalid Solana wallet address format');
+const phoneSchema = z.string()
+  .min(7, 'Phone number is too short')
+  .max(20, 'Phone number is too long')
+  .regex(/^[+0-9\s-]{7,20}$/, 'Invalid phone number format')
+  .trim();
 
 const signupSchema = z.discriminatedUnion('role', [
   // ── BUYER signup — no wallet needed ─────────────────────────────────────────
@@ -21,17 +21,13 @@ const signupSchema = z.discriminatedUnion('role', [
     country:  z.string().min(2).max(60).default('ghana'),
   }),
 
-  // ── CREATOR signup — wallet address is REQUIRED ──────────────────────────────
-  // Creator must paste their Solana USDC deposit address from their exchange
-  // (Binance for GH/KE/UG, Monica for NG, Coinbase/Kraken for US/UK/EU).
-  // Helio will split 70% of every sale directly to this address on-chain.
   z.object({
-    role:          z.literal('CREATOR'),
-    name:          z.string().min(2).max(80).trim(),
-    email:         z.string().email().toLowerCase(),
-    password:      z.string().min(6).max(100),
-    country:       z.string().min(2).max(60).default('ghana'),
-    solanaAddress: solanaAddressSchema,
+    role:     z.literal('CREATOR'),
+    name:     z.string().min(2).max(80).trim(),
+    email:    z.string().email().toLowerCase(),
+    password: z.string().min(6).max(100),
+    country:  z.string().min(2).max(60).default('ghana'),
+    phone:    phoneSchema,
   }),
 ]);
 
@@ -61,11 +57,9 @@ export const authController = {
       const field = firstError.path.join('.');
       let message = firstError.message;
 
-      if (field === 'solanaAddress' && firstError.code === 'invalid_type') {
-        message = 'Your USDC wallet address is required to create a creator account. '
-          + 'Please copy your Solana USDC deposit address from Binance, Monica, Coinbase, or any exchange.';
+    if (field === 'phone' && firstError.code === 'invalid_type') {
+        message = 'A phone number is required to create a creator account.';
       }
-
       throw new AppError(message, 400);
     }
 

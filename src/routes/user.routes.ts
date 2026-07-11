@@ -227,6 +227,28 @@ const templateCountMap = Object.fromEntries(templateCounts.map(t => [t._id, t.co
   });
 }),
 
+  // Get who follows the current user (creator-facing — "your audience")
+  getFollowers: asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.user!.id;
+    const follows = await prisma.follow.findMany({
+      where: { followingId: userId },
+      include: {
+        follower: {
+          select: {
+            id: true, name: true, bio: true, avatarUrl: true,
+            country: true, isEarlyAdopter: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json({
+      success: true,
+      followers: follows.map(f => f.follower),
+    });
+  }),
+
   // Rate a creator after a completed order
   rateCreator: asyncHandler(async (req: Request, res: Response) => {
     const { score, review, orderId } = z.object({
@@ -403,6 +425,7 @@ router.get('/orders',                userController.getOrders);
 router.delete('/account',            userController.deleteAccount);
 router.post('/creators/:id/follow',  userController.toggleFollow);
 router.get('/following',             userController.getFollowing);
+router.get('/followers',             userController.getFollowers);
 router.post('/rate',                 userController.rateCreator);
 router.post('/ratings/:id/reply', authenticate, userController.replyToRating);
 router.get('/preferences',  userController.getPreferences);

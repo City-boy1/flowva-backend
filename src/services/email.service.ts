@@ -310,6 +310,30 @@ export const emailService = {
       <p class="note">If you believe this change was made in error, please contact our support team.</p>
     `)),
 
+    payoutMethodApproved: (to: string, name: string, method: string) =>
+    send(to, 'Your payout method has been updated — FLOWVA', layout(`
+      <div class="card-title">Payout method updated ✓</div>
+      <div class="card-sub">Hi ${name}, your requested payout method change has been approved.</div>
+      <div class="info-box">
+        <div class="info-row"><span class="info-label">Active method</span><span class="info-value green">${method}</span></div>
+        <div class="info-row"><span class="info-label">Status</span><span class="info-value status-ok">✓ Active now</span></div>
+      </div>
+      <p style="color:#94a3b8;font-size:13px">Future payouts will be sent to this method until you request another change.</p>
+      <a href="${BASE}/dashboard.html#payout" class="cta">View Payout Settings →</a>
+    `)),
+
+  payoutMethodRejected: (to: string, name: string, method: string, reason: string) =>
+    send(to, 'Payout method change not approved — FLOWVA', layout(`
+      <div class="card-title">Payout method change not approved</div>
+      <div class="card-sub">Hi ${name}, we couldn't approve your request to switch to ${method}.</div>
+      <div style="background:#1e293b;border-left:3px solid #ef4444;border-radius:0 6px 6px 0;padding:14px 16px;margin:16px 0">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">Reason from review team</div>
+        <div style="color:#fca5a5;font-size:13px;line-height:1.6">${esc(reason)}</div>
+      </div>
+      <p style="color:#94a3b8;font-size:13px">Your current payout method is unchanged. Submit a new request from your dashboard any time.</p>
+      <a href="${BASE}/dashboard.html#payout" class="cta">View Payout Settings →</a>
+    `)),
+
     roleRequestSubmitted: (to: string, name: string) =>
     send(to, 'Creator application received — FLOWVA', layout(`
       <div class="card-title">Application received ✓</div>

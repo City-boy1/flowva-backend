@@ -1,6 +1,7 @@
 import { Template } from '../models/template.model.js';
 import { uploadToCloudinary, deleteFromCloudinary, uploadToCloudinaryStream } from '../utils/cloudinary.js';
 import { paymentService } from './payment.service.js';
+import { isPaystackCurrency, isSkrillCurrency, resolveCheckoutProvider } from '../config/payments.config.js';
 import { AppError } from '../middleware/errorHandler.js';
 import prisma from '../db/prisma.js';
 import logger from '../utils/logger.js';
@@ -10,13 +11,41 @@ import logger from '../utils/logger.js';
 const MAX_VIDEO_BYTES =  70 * 1024 * 1024;   //  70 MB
 const MAX_IMAGE_BYTES =   5 * 1024 * 1024;   //   5 MB
 const MAX_PDF_BYTES   =  10 * 1024 * 1024;   //  10 MB
+const MAX_THUMB_BYTES =   5 * 1024 * 1024;   //   5 MB
+const MAX_PREVIEW_VIDEO_BYTES = 70 * 1024 * 1024; // reuse video cap
+const MAX_ZIP_BYTES   =  70 * 1024 * 1024;   //  70 MB — see size-limit note below
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function resolveFileType(mime: string): 'video' | 'zip' | 'image' | 'pdf' {
-  if (mime.startsWith('video/'))                                    return 'video';
-  if (mime.startsWith('image/'))                                    return 'image';
-  if (mime === 'application/pdf')                                   return 'pdf';
-  throw new AppError('Unsupported file type', 400);
+// Design-tool and archive formats (PSD, AI, BLEND, FBX, mobile-editor
+// project files, etc.) rarely report a reliable mimetype from the
+// browser — often 'application/octet-stream' or empty — so these are
+// resolved by file extension instead, matching every extension the
+// dashboard upload wizard's category picker actually offers.
+const ZIP_EXTENSIONS = new Set([
+  // Motion graphics
+  'aep', 'aet', 'mogrt', 'prproj', 'drp', 'fcpxml', 'motion', 'veg', 'hfp',
+  // Graphic design
+  'psd', 'psb', 'ai', 'eps', 'svg', 'ait', 'indd', 'idml', 'indt', 'cdr', 'cdt',
+  'afdesign', 'afphoto', 'afpub', 'sketch', 'fig', 'procreate', 'kra', 'pxd',
+  // Animation 2D/3D
+  'blend', 'c4d', 'ma', 'mb', 'max', 'moho', 'xsh', 'fla', 'xfl',
+  // 3D assets
+  'obj', 'fbx', 'glb', 'gltf', 'stl',
+  // Mobile
+  'plp', 'ibis', 'alm', 'kmproject', 'vnproj',
+  // Generic archive fallback
+  'zip', 'rar', '7z',
+]);
+
+function resolveFileType(mime: string, originalName: string): 'video' | 'zip' | 'image' | 'pdf' {
+  if (mime.startsWith('video/'))  return 'video';
+  if (mime.startsWith('image/')) return 'image';
+  if (mime === 'application/pdf') return 'pdf';
+
+  const ext = originalName.split('.').pop()?.toLowerCase() ?? '';
+  if (ZIP_EXTENSIONS.has(ext)) return 'zip';
+
+  throw new AppError(`Unsupported file type: .${ext || 'unknown'}`, 400);
 }
 
 function checkSize(fileType: ReturnType<typeof resolveFileType>, bytes: number) {
@@ -24,6 +53,7 @@ function checkSize(fileType: ReturnType<typeof resolveFileType>, bytes: number) 
     video: MAX_VIDEO_BYTES,
     image: MAX_IMAGE_BYTES,
     pdf:   MAX_PDF_BYTES,
+    zip:   MAX_ZIP_BYTES,
   };
   if (bytes > limits[fileType]) {
     const mb = Math.round(limits[fileType] / 1024 / 1024);
@@ -37,41 +67,50 @@ function checkSize(fileType: ReturnType<typeof resolveFileType>, bytes: number) 
 async function uploadFile(
   source: Buffer | string,
   fileType: ReturnType<typeof resolveFileType>,
-): Promise<{
-  fileUrl:         string;
-  filePublicId:    string;
-  previewUrl:      string | null;
-  previewVideoUrl: string | null;
-  previewPublicId: string | null;
-}> {
+): Promise<{ fileUrl: string; filePublicId: string }> {
 
   if (fileType === 'video') {
     if (typeof source !== 'string') throw new Error('Video upload requires a file path');
     const result = await uploadToCloudinaryStream(source, 'templates/videos', {
       resource_type: 'video',
-      chunk_size:    6_000_000,   // 6 MB chunks — Cloudinary resumable threshold
-      timeout:       600_000,     // 10 min — enough for a 200 MB video on free tier
+      chunk_size:    6_000_000,
+      timeout:       600_000,
     });
-
-    const previewUrl = result.url
-      .replace('/upload/', '/upload/so_0,w_640,f_jpg,q_auto/')
-      .replace(/\.[^.]+$/, '.jpg');
-
-    const previewVideoUrl = result.url
-      .replace('/upload/', '/upload/so_0,eo_8,w_640,q_auto/');
-
-    return { fileUrl: result.url, filePublicId: result.publicId, previewUrl, previewVideoUrl, previewPublicId: null };
+    return { fileUrl: result.url, filePublicId: result.publicId };
   }
 
   if (fileType === 'image') {
-    // Images still come as buffers (multer memoryStorage for images)
     const result = await uploadToCloudinary(source, 'templates/images', { resource_type: 'image' });
-    return { fileUrl: result.url, filePublicId: result.publicId, previewUrl: result.url, previewVideoUrl: null, previewPublicId: result.publicId };
+    return { fileUrl: result.url, filePublicId: result.publicId };
   }
 
-  // PDF
-  const result = await uploadToCloudinary(source, 'templates/pdfs', { resource_type: 'raw' });
-  return { fileUrl: result.url, filePublicId: result.publicId, previewUrl: null, previewVideoUrl: null, previewPublicId: null };
+  if (fileType === 'pdf') {
+    const result = await uploadToCloudinary(source, 'templates/pdfs', { resource_type: 'raw' });
+    return { fileUrl: result.url, filePublicId: result.publicId };
+  }
+
+  // zip / design-tool files (PSD, AI, BLEND, FBX, etc.) — Cloudinary
+  // stores these as opaque 'raw' assets regardless of the real format.
+  const result = typeof source === 'string'
+    ? await uploadToCloudinaryStream(source, 'templates/files', { resource_type: 'raw', timeout: 300_000 })
+    : await uploadToCloudinary(source, 'templates/files', { resource_type: 'raw' });
+  return { fileUrl: result.url, filePublicId: result.publicId };
+}
+
+// Thumbnails and preview videos are now always creator-supplied — no
+// longer auto-derived from the main template file.
+async function uploadThumbnail(source: Buffer | string): Promise<{ url: string; publicId: string }> {
+  const result = await uploadToCloudinary(source, 'templates/thumbnails', { resource_type: 'image' });
+  return { url: result.url, publicId: result.publicId };
+}
+
+async function uploadPreviewVideo(source: Buffer | string): Promise<{ url: string; publicId: string }> {
+  const result = typeof source === 'string'
+    ? await uploadToCloudinaryStream(source, 'templates/previews', {
+        resource_type: 'video', chunk_size: 6_000_000, timeout: 300_000,
+      })
+    : await uploadToCloudinary(source, 'templates/previews', { resource_type: 'video' });
+  return { url: result.url, publicId: result.publicId };
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -80,35 +119,85 @@ export const templateService = {
 
 async create(creatorId: string, data: {
   title: string; description: string; category: string;
-  tags: string[]; software: string[]; price: number; currency: string;
-  fileBuffer?: Buffer;   // images (still in memory)
-  filePath?:   string;   // video/zip (on disk)
+  tags: string[]; software: string[];
+  priceLocal: number; priceUSD?: number; currency: string;
+  fileBuffer?: Buffer;   filePath?: string;
   fileMime: string; fileSizeBytes: number; originalName: string;
+  thumbnailBuffer?: Buffer; thumbnailPath?: string;
+  thumbnailMime: string; thumbnailSizeBytes: number;
+  previewVideoBuffer?: Buffer; previewVideoPath?: string;
+  previewVideoMime?: string; previewVideoSizeBytes?: number;
 }) {
-  const fileType = resolveFileType(data.fileMime);
+  const fileType = resolveFileType(data.fileMime, data.originalName);
   checkSize(fileType, data.fileSizeBytes);
 
-  const source = data.filePath ?? data.fileBuffer!;
-
-  let uploaded;
-  try {
-    uploaded = await uploadFile(source, fileType);
-  } finally {
-    // Always clean up the temp file to avoid filling the disk
-    if (data.filePath) {
-      const fs = await import('fs/promises');
-      await fs.unlink(data.filePath).catch(() => {});
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(data.thumbnailMime)) {
+    throw new AppError('Thumbnail must be JPEG, PNG, or WebP', 400);
+  }
+  if (data.thumbnailSizeBytes > MAX_THUMB_BYTES) {
+    throw new AppError('Thumbnail too large. Max 5 MB.', 413);
+  }
+  if (data.previewVideoMime) {
+    if (!data.previewVideoMime.startsWith('video/')) {
+      throw new AppError('Preview video must be a video file', 400);
+    }
+    if ((data.previewVideoSizeBytes ?? 0) > MAX_PREVIEW_VIDEO_BYTES) {
+      throw new AppError('Preview video too large. Max 70 MB.', 413);
     }
   }
 
-  const { fileUrl, filePublicId, previewUrl, previewVideoUrl, previewPublicId } = uploaded;
+  // Country is always resolved server-side from the creator's own
+  // profile — never trusted from the client — since it determines which
+  // buyers see this template in local-currency (home) pricing.
+  const creator = await prisma.user.findUnique({
+    where: { id: creatorId },
+    select: { country: true },
+  });
+  if (!creator) throw new AppError('Creator not found', 404);
+
+  // Fraud/payout-safety rule: a creator must have a payout method on file
+  // before they can sell anything — otherwise completed sales have nowhere
+  // to pay out to. Set once in Dashboard → Payouts; see payoutService.
+  const payoutSettings = await prisma.payoutSetting.findUnique({ where: { userId: creatorId } });
+  if (!payoutSettings?.primaryMethod) {
+    throw new AppError('Please set up a payout method (Dashboard → Payouts) before uploading a template.', 400);
+  }
+
+  const source      = data.filePath ?? data.fileBuffer!;
+  const thumbSource  = data.thumbnailPath ?? data.thumbnailBuffer!;
+  const previewSource = data.previewVideoPath ?? data.previewVideoBuffer;
+
+  let uploadedFile: { fileUrl: string; filePublicId: string };
+  let uploadedThumb: { url: string; publicId: string };
+  let uploadedPreview: { url: string; publicId: string } | null = null;
+
+  try {
+    uploadedFile  = await uploadFile(source, fileType);
+    uploadedThumb = await uploadThumbnail(thumbSource);
+    if (previewSource) uploadedPreview = await uploadPreviewVideo(previewSource);
+  } finally {
+    const fs = await import('fs/promises');
+    if (data.filePath)         await fs.unlink(data.filePath).catch(() => {});
+    if (data.thumbnailPath)    await fs.unlink(data.thumbnailPath).catch(() => {});
+    if (data.previewVideoPath) await fs.unlink(data.previewVideoPath).catch(() => {});
+  }
 
   const template = await Template.create({
     creatorId, title: data.title, description: data.description,
     category: data.category, tags: data.tags, software: data.software,
-    price: data.price, currency: data.currency,
-    fileUrl, filePublicId, fileType, fileSizeBytes: data.fileSizeBytes,
-    previewUrl, previewVideoUrl: previewVideoUrl ?? null, previewPublicId,
+    creatorCountry: creator.country,
+    currency:       data.currency,
+    priceLocal:     data.priceLocal,
+    // priceUSD is meaningless when the creator's own currency is already
+    // USD — priceLocal already IS the USD price in that case.
+    priceUSD: data.currency === 'USD' ? null : (data.priceUSD ?? null),
+    fileUrl:              uploadedFile.fileUrl,
+    filePublicId:         uploadedFile.filePublicId,
+    fileType, fileSizeBytes: data.fileSizeBytes,
+    previewUrl:           uploadedThumb.url,
+    previewPublicId:      uploadedThumb.publicId,
+    previewVideoUrl:      uploadedPreview?.url ?? null,
+    previewVideoPublicId: uploadedPreview?.publicId ?? null,
     status: 'PENDING',
   });
 
@@ -140,8 +229,13 @@ filter.status = status ?? (creatorId ? { $ne: 'REJECTED' } : 'APPROVED');
     const sortMap: Record<string, any> = {
       newest:     { createdAt: -1 },
       oldest:     { createdAt:  1 },
-      price_asc:  { price: 1 },
-      price_desc: { price: -1 },
+      // NOTE: sorting by priceLocal across mixed currencies isn't
+      // apples-to-apples (200 GHS vs 5 USD). The frontend currently does
+      // its own sort client-side after filtering to a single
+      // country/currency view, so this backend sort option is mostly
+      // unused today — left renamed for consistency, not a behavior fix.
+      price_asc:  { priceLocal: 1 },
+      price_desc: { priceLocal: -1 },
       popular:    { purchaseCount: -1 },
     };
     const sortBy = sortMap[sort ?? 'newest'] ?? { createdAt: -1 };
@@ -151,7 +245,7 @@ filter.status = status ?? (creatorId ? { $ne: 'REJECTED' } : 'APPROVED');
     .sort(sortBy)
     .skip(skip)
     .limit(safeLimit)
-    .select('-filePublicId -previewPublicId -fileUrl')
+    .select('-filePublicId -previewPublicId -previewVideoPublicId -fileUrl')
     .lean(),
   Template.countDocuments(filter),
 ]);
@@ -184,7 +278,7 @@ return {
 
   async getById(id: string, requesterRole?: string) {
     const template = await Template.findById(id)
-      .select('-filePublicId -previewPublicId -fileUrl')
+      .select('-filePublicId -previewPublicId -previewVideoPublicId -fileUrl')
       .lean();
     if (!template) throw new AppError('Template not found', 404);
     if (template.status !== 'APPROVED' && requesterRole !== 'ADMIN') {
@@ -198,7 +292,7 @@ return {
     if (!template) throw new AppError('Template not found', 404);
     if (template.status !== 'APPROVED') throw new AppError('Template not available', 403);
 
-    if (template.price === 0) {
+    if (template.priceLocal === 0) {
       await Template.findByIdAndUpdate(templateId, { $inc: { downloadCount: 1 } });
       return template.fileUrl;
     }
@@ -222,7 +316,8 @@ return {
 
   async update(id: string, requesterId: string, data: Partial<{
     title: string; description: string; category: string;
-    tags: string[]; software: string[]; price: number; currency: string;
+    tags: string[]; software: string[];
+    priceLocal: number; priceUSD: number; currency: string;
   }>) {
     const template = await Template.findById(id);
     if (!template) throw new AppError('Template not found', 404);
@@ -256,9 +351,15 @@ return {
       logger.warn('Cloudinary delete failed (file)', { error: err.message })
     );
 
-    if (template.previewPublicId && template.fileType === 'video') {
+    if (template.previewPublicId) {
       await deleteFromCloudinary(template.previewPublicId, 'image').catch(err =>
-        logger.warn('Cloudinary delete failed (preview)', { error: err.message })
+        logger.warn('Cloudinary delete failed (thumbnail)', { error: err.message })
+      );
+    }
+
+    if (template.previewVideoPublicId) {
+      await deleteFromCloudinary(template.previewVideoPublicId, 'video').catch(err =>
+        logger.warn('Cloudinary delete failed (preview video)', { error: err.message })
       );
     }
 
@@ -380,6 +481,15 @@ return updated;
       }
     }
 
+    if (template.previewVideoPublicId) {
+      try {
+        await deleteFromCloudinary(template.previewVideoPublicId, 'video');
+        logger.info('Deleted Cloudinary preview video asset', { templateId: id, previewVideoPublicId: template.previewVideoPublicId });
+      } catch (err: any) {
+        logger.warn('Failed deleting preview video asset', { templateId: id, error: err.message });
+      }
+    }
+
     await template.deleteOne();
     logger.info('Rejected template permanently deleted', { templateId: id, deletedBy: adminId });
     return true;
@@ -389,7 +499,7 @@ return updated;
     const template = await Template.findById(templateId);
     if (!template) throw new AppError('Template not found', 404);
     if (template.status !== 'APPROVED') throw new AppError('Template not available', 403);
-    if (template.price === 0) throw new AppError('Use download endpoint for free templates', 400);
+    if (template.priceLocal === 0) throw new AppError('Use download endpoint for free templates', 400);
 
     const existing = await prisma.order.findFirst({
       where: {
@@ -409,14 +519,58 @@ return updated;
       data: { status: 'CANCELLED' },
     });
 
-    const effectiveCurrency = template.currency ?? 'USD';
+    // Mirror the frontend's display-currency decision: buyer in the same
+    // country as the creator pays the local price/currency; anyone else
+    // pays USD — but only if the creator actually set a USD price (or
+    // their own currency already IS USD). The frontend already hides
+    // "buy" for USD-less foreign templates, so this is a defensive
+    // re-check, not the primary gate.
+    const buyerUser = await prisma.user.findUnique({
+      where: { id: buyer.id },
+      select: { country: true },
+    });
+    const sameCountry = !!buyerUser?.country && buyerUser.country === template.creatorCountry;
+
+    let amount: number;
+    let currency: string;
+    if (sameCountry) {
+      amount   = template.priceLocal;
+      currency = template.currency;
+    } else if (template.currency === 'USD') {
+      amount   = template.priceLocal;
+      currency = 'USD';
+    } else if (template.priceUSD != null) {
+      amount   = template.priceUSD;
+      currency = 'USD';
+    } else {
+      throw new AppError('This template is not available for purchase outside the creator\'s country', 400);
+    }
+
+    // Paystack can only charge a fixed set of currencies. If the resolved
+    // currency isn't payable (e.g. a home-country buyer whose own currency
+    // isn't Paystack-supported), fall back to the USD price instead of
+    // attempting a charge that will fail.
+    // ⚠️ The frontend must apply this exact same fallback when DISPLAYING
+    // the price — otherwise a buyer could see a local price and be shown
+    // USD at checkout, which is precisely the "feels cheated" scenario to
+    // avoid. This still needs a matching frontend patch — flagged, not yet
+    // done.
+    if (!buyerUser?.country) throw new AppError('Please add your country to your profile before purchasing.', 400);
+    const provider = resolveCheckoutProvider(buyerUser.country);
+    const currencyValid = provider === 'PAYSTACK' ? isPaystackCurrency(currency) : isSkrillCurrency(currency);
+
+    if (!currencyValid) {
+      if (template.priceUSD != null)        { amount = template.priceUSD;    currency = 'USD'; }
+      else if (template.currency === 'USD') { amount = template.priceLocal; currency = 'USD'; }
+      else throw new AppError('This template cannot currently be purchased — no payable price is set.', 400);
+    }
 
     return paymentService.initializeCheckout(buyer.id, {
       type:        'TEMPLATE',
       referenceId: templateId,
       creatorId:   template.creatorId,
-      amount:      template.price,
-      currency:    effectiveCurrency,
+      amount,
+      currency,
       email:       buyer.email,
       callbackUrl,
     });
@@ -427,7 +581,7 @@ return updated;
     if (!template) throw new AppError('Template not found', 404);
     if (template.status !== 'APPROVED') throw new AppError('Template not available', 403);
 
-    if (template.price > 0) {
+    if (template.priceLocal > 0) {
       const order = await prisma.order.findFirst({
         where: {
           buyerId,
@@ -529,7 +683,7 @@ return updated;
       throw new AppError('Template not available', 403);
     }
 
-    if (template.price > 0) {
+    if (template.priceLocal > 0) {
       const order = await prisma.order.findFirst({
         where: {
           buyerId:         payload.buyerId,

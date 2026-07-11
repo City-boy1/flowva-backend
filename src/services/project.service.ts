@@ -76,12 +76,29 @@ export const projectService = {
       ratings.map(r => [r.creatorId, { avg: r._avg.score ?? 0, count: r._count.score }])
     );
 
+    // Delivery note/file for projects currently awaiting buyer review —
+    // keyed by acceptedBidId, since that's how deliver()/approveDelivery()
+    // locate the relevant Order. Only fetched for projects that could
+    // plausibly have one, to avoid an unnecessary query on every list call.
+    const projectsAwaitingReview = openProjects.filter(
+      p => p.acceptedBidId && ['IN_PROGRESS', 'DISPUTED', 'COMPLETED'].includes(p.status)
+    );
+    const acceptedBidIds = projectsAwaitingReview.map(p => p.acceptedBidId!);
+    const relevantOrders = acceptedBidIds.length
+      ? await prisma.order.findMany({
+          where: { mongoBidId: { in: acceptedBidIds } },
+          select: { mongoBidId: true, deliveryNote: true, status: true },
+        })
+      : [];
+    const orderByBidId = Object.fromEntries(relevantOrders.map(o => [o.mongoBidId, o]));
+
     return openProjects.map((p) => ({
       ...p,
       content: contentMap[p.id] || null,
       clientName: clientMap[p.clientId] ?? 'Client',
       clientRating: ratingMap[p.clientId]?.avg ?? 0,
       clientRatingCount: ratingMap[p.clientId]?.count ?? 0,
+      _deliveryNote: (p.acceptedBidId && orderByBidId[p.acceptedBidId]?.deliveryNote) ?? null,
     }));
   },
 
@@ -114,6 +131,17 @@ export const projectService = {
       sampleUrls: data.sampleUrls || [],
     });
 
+    // Notification only — bidding is frequent and low-stakes per event;
+    // an in-app badge is enough, no need to email the client every bid.
+    await prisma.notification.create({
+      data: {
+        userId:  project.clientId,
+        type:    'BID_SUBMITTED',
+        title:   'New bid received',
+        message: `A creator submitted a bid of $${data.amount.toFixed(2)} on your project.`,
+      },
+    }).catch(() => {});
+
     return pgBid;
   },
 
@@ -138,6 +166,13 @@ export const projectService = {
     const bid = await prisma.bid.findUnique({ where: { id: bidId } });
     if (!bid || bid.projectId !== projectId) throw new AppError('Bid not found', 404);
 
+    // Same payout-safety rule as template uploads — a creator can't be
+    // handed paid project work with nowhere for the escrow release to go.
+    const bidderPayoutSettings = await prisma.payoutSetting.findUnique({ where: { userId: bid.creatorId } });
+    if (!bidderPayoutSettings?.primaryMethod) {
+      throw new AppError('This creator has not set up a payout method yet and cannot be assigned paid work.', 400);
+    }
+
     await prisma.$transaction([
       prisma.project.update({
         where: { id: projectId },
@@ -152,7 +187,17 @@ export const projectService = {
 
     const creator = await prisma.user.findUnique({ where: { id: bid.creatorId } });
     const content = await ProjectContent.findOne({ pgProjectId: projectId }).lean();
-    if (creator && content) await emailService.bidAccepted(creator.email, content.title);
+    if (creator && content) {
+      emailService.bidAccepted(creator.email, content.title).catch(() => {});
+      await prisma.notification.create({
+        data: {
+          userId:  bid.creatorId,
+          type:    'BID_ACCEPTED',
+          title:   'Bid accepted',
+          message: `Your bid on "${content.title}" was accepted. The project is now in progress.`,
+        },
+      }).catch(() => {});
+    }
 
     return bid;
   },
@@ -160,10 +205,21 @@ export const projectService = {
   async rejectBid(projectId: string, bidId: string, clientId: string) {
     const project = await prisma.project.findUnique({ where: { id: projectId } });
     if (!project || project.clientId !== clientId) throw new AppError('Forbidden', 403);
+    const bid = await prisma.bid.findUnique({ where: { id: bidId } });
     await prisma.bid.updateMany({
       where: { id: bidId, projectId },
       data: { status: 'REJECTED' },
     });
+    if (bid) {
+      await prisma.notification.create({
+        data: {
+          userId:  bid.creatorId,
+          type:    'BID_REJECTED',
+          title:   'Bid not selected',
+          message: `Your bid on a project was not selected by the client.`,
+        },
+      }).catch(() => {});
+    }
   },
 
   async withdrawBid(projectId: string, bidId: string, creatorId: string) {
@@ -194,10 +250,28 @@ export const projectService = {
       where: { mongoBidId: acceptedBid.id, status: 'PAID' },
       data: { status: 'DELIVERED', deliveryNote: `${deliveryNote}||${fileUrl}` },
     });
-    return prisma.project.update({
+    const updatedProject = await prisma.project.update({
       where: { id: projectId },
       data: { status: 'IN_PROGRESS' }, // stays IN_PROGRESS until client approves
     });
+
+    // Both — client needs to act (approve/revise) within 7 days per the
+    // email copy, so this is time-sensitive enough to warrant both.
+    const client = await prisma.user.findUnique({ where: { id: project.clientId }, select: { email: true } });
+    const content = await ProjectContent.findOne({ pgProjectId: projectId }).lean();
+    if (client && content) {
+      emailService.projectDelivered(client.email, content.title, deliveryNote).catch(() => {});
+    }
+    await prisma.notification.create({
+      data: {
+        userId:  project.clientId,
+        type:    'PROJECT_DELIVERED',
+        title:   'Delivery ready for review',
+        message: `Your creator delivered work${content ? ` on "${content.title}"` : ''}. Review it to release payment.`,
+      },
+    }).catch(() => {});
+
+    return updatedProject;
   },
 
   async approveDelivery(projectId: string, clientId: string) {
@@ -217,12 +291,9 @@ export const projectService = {
 
     const commissionRate = order.creator.isEarlyAdopter
       ? parseFloat(process.env.EARLY_ADOPTER_COMMISSION_RATE || '0.10')
-      : parseFloat(process.env.PLATFORM_COMMISSION_RATE || '0.30');
+      : parseFloat(process.env.PLATFORM_COMMISSION_RATE || '0.20');
     const creatorEarning = Number((order.amount * (1 - commissionRate)).toFixed(2));
 
-    // NOTE: Helio already split the payment on-chain at checkout.
-    // CreatorWallet is a display-only earnings tracker — we update it here
-    // so the dashboard shows accurate lifetime earnings.
     await prisma.$transaction([
       prisma.order.update({ where: { id: order.id }, data: { status: 'COMPLETED', completedAt: new Date() } }),
       prisma.project.update({ where: { id: projectId }, data: { status: 'COMPLETED' } }),
@@ -261,6 +332,16 @@ export const projectService = {
       where: { id: order.id },
       data: { status: 'REVISION_REQUESTED', deliveryNote: note, revisionCount: { increment: 1 } },
     });
+    if (acceptedBid) {
+      await prisma.notification.create({
+        data: {
+          userId:  acceptedBid.creatorId,
+          type:    'REVISION_REQUESTED',
+          title:   'Revision requested',
+          message: `The client requested changes: ${note}`,
+        },
+      }).catch(() => {});
+    }
     return project;
   },
 
@@ -278,87 +359,5 @@ export const projectService = {
       prisma.escrow.updateMany({ where: { orderId: order.id }, data: { status: 'DISPUTED' } }),
     ]);
     return project;
-  },
-
-  async fundEscrow(data: {
-    projectId: string;
-    bidId: string;
-    amount: number;
-    method: string;
-    reference: string;
-    clientId: string;
-  }) {
-    const { projectId, bidId, amount, method, reference, clientId } = data;
-
-    // Validate project + bid belong together and client owns the project
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
-      include: { bids: { where: { id: bidId } } },
-    });
-    if (!project) throw new AppError('Project not found', 404);
-    if (project.clientId !== clientId) throw new AppError('Forbidden', 403);
-    if (project.status !== 'IN_PROGRESS') throw new AppError('Project must be IN_PROGRESS (bid accepted) before funding escrow', 400);
-
-    const bid = project.bids[0];
-    if (!bid) throw new AppError('Bid not found on this project', 404);
-    if (bid.status !== 'ACCEPTED') throw new AppError('Bid is not accepted', 400);
-
-    const creator = await prisma.user.findUnique({ where: { id: bid.creatorId } });
-    if (!creator) throw new AppError('Creator not found', 404);
-
-    // Idempotency: if order + escrow already exist for this bid, return existing
-    const existingOrder = await prisma.order.findFirst({
-      where: { mongoBidId: bidId },
-      include: { escrow: true },
-    });
-    if (existingOrder) return { order: existingOrder, escrow: existingOrder.escrow };
-
-    // Create Order + Payment + Escrow atomically
-    const order = await prisma.order.create({
-      data: {
-        buyerId: clientId,
-        creatorId: bid.creatorId,
-        mongoBidId: bidId,
-        type: 'PROJECT',
-        amount,
-        currency: 'USD',
-        status: 'PAID',
-      },
-    });
-
-    const [escrow, payment] = await prisma.$transaction([
-      prisma.escrow.create({
-        data: {
-          orderId: order.id,
-          amount,
-          currency: 'USD',
-          status: 'HELD',
-        },
-      }),
-      prisma.payment.create({
-        data: {
-          orderId: order.id,
-          userId: clientId,
-          provider: 'HELIO',
-          providerRef: reference,
-          amount,
-          currency: 'USD',
-          status: 'SUCCESS',
-          metadata: { method },
-        },
-      }),
-    ]);
-
-    // Notify creator to begin work
-    await prisma.notification.create({
-      data: {
-        userId: bid.creatorId,
-        type: 'ESCROW_FUNDED',
-        title: 'Payment received — you can start work',
-        message: `The client has funded escrow for the project. Deliver by the agreed deadline.`,
-      },
-    });
-
-    return { order, escrow, payment };
   },
 };

@@ -29,6 +29,7 @@ import contactRouter from './routes/contact.routes.js';
 import discordRoutes from './routes/discord.routes.js';
 import { startPayoutWorker } from './queues/payout.queue.js';
 
+
 validateEnv();
 
 if (process.env.SENTRY_DSN) {
@@ -106,7 +107,7 @@ if (process.env.NODE_ENV === 'production') {
 
 // ─── Body / Cookies ──────────────────────────────────────────────────────────
 // Raw body preserved for webhook signature verification
-app.use('/api/payments/webhook/helio', express.raw({ type: '*/*' }));
+app.use('/api/payments/webhook/paystack', express.raw({ type: '*/*' }));
 app.use(compression());
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
@@ -139,6 +140,7 @@ app.use('/api/tutorials', tutorialRoutes);
 app.use('/api/jobs',      jobRoutes);
 app.use('/api/contact', contactRouter);
 app.use('/api/discord', discordRoutes);
+
 // Keep-alive for free tier (prevents cold starts killing long uploads)
 app.get('/ping', (_req, res) => res.send('ok'));// ─── Errors ───────────────────────────────────────────────────────────────────
 app.use(notFoundHandler);

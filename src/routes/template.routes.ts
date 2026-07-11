@@ -9,8 +9,6 @@ import path from 'path';
 
 const router = Router();
 
-// Single file only — preview is auto-generated from first frame/page on backend
-
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, os.tmpdir()),
   filename:    (_req, file, cb) => {
@@ -23,22 +21,44 @@ const storage = multer.diskStorage({
 // Images/PDFs under 10 MB stay in memory; large files go to disk
 const mem = multer({
   storage,
-  limits: { fileSize: 70 * 1024 * 1024 }, // hard cap at multer level — anything bigger is rejected before upload completes
+  limits: { fileSize: 70 * 1024 * 1024 }, // hard cap at multer level
   fileFilter: (_req, file, cb) => {
-    const allowed = [
-      'video/mp4', 'video/webm', 'video/quicktime',
-      'image/png', 'image/jpeg', 'image/webp',
-      'application/pdf',
-    ];
-    if (allowed.includes(file.mimetype)) cb(null, true);
-    else cb(new Error('Unsupported file type'));
+    if (file.fieldname === 'thumbnail') {
+      const allowed = ['image/png', 'image/jpeg', 'image/webp'];
+      return allowed.includes(file.mimetype)
+        ? cb(null, true)
+        : cb(new Error('Thumbnail must be JPEG, PNG, or WebP'));
+    }
+    if (file.fieldname === 'preview') {
+      const allowed = ['video/mp4', 'video/webm', 'video/quicktime'];
+      return allowed.includes(file.mimetype)
+        ? cb(null, true)
+        : cb(new Error('Preview video must be MP4, WebM, or MOV'));
+    }
+    // Main template file — resolveFileType() in the service is the
+    // authoritative check. NOTE: design-tool formats (PSD/AI/BLEND/FBX,
+    // everything the upload wizard's category picker offers beyond
+    // video/image/pdf) aren't handled by resolveFileType() yet — that's
+    // a pre-existing gap, unrelated to this pricing change, flagged here
+    // since it will otherwise reject most non-video/image/pdf uploads.
+    cb(null, true);
   },
 });
 
 router.get('/',    generalRateLimit, templateController.list);
 router.get('/:id', generalRateLimit, templateController.getOne);
-// Single file upload — preview auto-generated
-router.post('/',  authenticate,  requireRole('CREATOR', 'ADMIN'),  uploadRateLimit,  mem.single('file'),  templateController.create,);
+router.post(
+  '/',
+  authenticate,
+  requireRole('CREATOR', 'ADMIN'),
+  uploadRateLimit,
+  mem.fields([
+    { name: 'file',      maxCount: 1 }, // the template file itself
+    { name: 'thumbnail', maxCount: 1 }, // required
+    { name: 'preview',   maxCount: 1 }, // optional
+  ]),
+  templateController.create,
+);
 router.put('/:id',    authenticate, requireRole('CREATOR', 'ADMIN'), templateController.update);
 router.delete('/:id', authenticate, requireRole('CREATOR', 'ADMIN'), templateController.delete);
 router.patch('/:id/approve',    authenticate, requireRole('ADMIN'), templateController.approve);

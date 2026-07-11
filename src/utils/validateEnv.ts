@@ -29,14 +29,17 @@ const REQUIRED: { key: string; description: string }[] = [
   { key: 'BREVO_API_KEY',  description: 'Brevo email API key' },
   { key: 'ADMIN_EMAIL',    description: 'Platform admin email' },
 
-  // ── Helio (buyer checkout + auto 30/70 split on-chain) ──────────────────────
-  { key: 'HELIO_API_KEY',         description: 'Helio public API key' },
-  { key: 'HELIO_API_SECRET',      description: 'Helio secret key' },
-  { key: 'HELIO_WEBHOOK_SECRET',  description: 'Helio webhook signing secret' },
+// ── Payments: Paystack ────────────────────────────────────────────────────
+{ key: 'PAYSTACK_SECRET_KEY', description: 'Paystack secret key (checkout + webhook signature + transfers)' },
+{ key: 'PAYSTACK_PUBLIC_KEY', description: 'Paystack public key (checkout)' },
 
-  // ── Platform wallet ─────────────────────────────────────────────────────────
-  { key: 'PLATFORM_WALLET_ADDRESS', description: 'Phantom Solana wallet — receives 30% commission' },
-  { key: 'USDC_MINT',             description: 'USDC SPL token mint address on Solana' },
+// ── Payments: Skrill ───────────────────────────────────────────────────────
+{ key: 'SKRILL_MERCHANT_ID',    description: 'Skrill numeric merchant/account ID (webhook signature)' },
+{ key: 'SKRILL_MERCHANT_EMAIL', description: 'Skrill merchant email (pay_to_email on checkout)' },
+{ key: 'SKRILL_SECRET_WORD',    description: 'Skrill secret word (webhook signature)' },
+
+// ── Payments: general ────────────────────────────────────────────────────────
+{ key: 'BACKEND_URL',           description: 'Public HTTPS backend URL (Skrill status_url webhook target)' },
 ];
 
 const OPTIONAL: { key: string; description: string }[] = [

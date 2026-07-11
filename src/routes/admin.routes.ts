@@ -35,7 +35,7 @@ import { emailService }               from '../services/email.service.js';
 function resolveRates(creator: { isEarlyAdopter: boolean }) {
   const commissionRate = creator.isEarlyAdopter
     ? parseFloat(process.env.EARLY_ADOPTER_COMMISSION_RATE || '0.10')
-    : parseFloat(process.env.PLATFORM_COMMISSION_RATE      || '0.30');
+    : parseFloat(process.env.PLATFORM_COMMISSION_RATE      || '0.20');
   return { commissionRate, creatorRate: 1 - commissionRate };
 }
 
@@ -406,6 +406,57 @@ router.post('/commissions/:id/disburse', asyncHandler(async (req: Request, res: 
 }));
 
 // ════════════════════════════════════════════════════════════════════════════
+//  PAYOUTS
+// ════════════════════════════════════════════════════════════════════════════
+
+router.get('/payouts/pending', asyncHandler(async (_req: Request, res: Response) => {
+  const { payoutService } = await import('../services/payout.service.js');
+  const payouts = await payoutService.getPendingPayouts();
+  res.json({ success: true, payouts });
+}));
+
+router.post('/payouts/:creatorId/pay-paystack', asyncHandler(async (req: Request, res: Response) => {
+  const { payoutService } = await import('../services/payout.service.js');
+  const result = await payoutService.payViaPaystack(req.params.creatorId);
+  res.json({ success: true, result });
+}));
+
+router.post('/payouts/:creatorId/mark-paid', asyncHandler(async (req: Request, res: Response) => {
+  const { method, reference } = z.object({
+    method:    z.enum(['SKRILL', 'GREY']),
+    reference: z.string().optional(),
+  }).parse(req.body);
+  const { payoutService } = await import('../services/payout.service.js');
+  await payoutService.markManualPayoutPaid(req.params.creatorId, method, reference);
+  res.json({ success: true });
+}));
+
+// ── Payout method change requests ──────────────────────────────────────────
+// Creator already-locked-in method changes require this admin sign-off —
+// see payoutService.requestPayoutMethodChange. Gated by requireRole('ADMIN')
+// at the top of this router, same as every other route here.
+
+router.get('/payout-requests/pending', asyncHandler(async (_req: Request, res: Response) => {
+  const { payoutService } = await import('../services/payout.service.js');
+  const requests = await payoutService.getPendingChangeRequests();
+  res.json({ success: true, requests });
+}));
+
+router.post('/payout-requests/:id/approve', asyncHandler(async (req: Request, res: Response) => {
+  const { adminNote } = z.object({ adminNote: z.string().optional() }).parse(req.body);
+  const { payoutService } = await import('../services/payout.service.js');
+  const result = await payoutService.approveChangeRequest(req.params.id, req.user!.id, adminNote);
+  res.json({ success: true, result });
+}));
+
+router.post('/payout-requests/:id/reject', asyncHandler(async (req: Request, res: Response) => {
+  const { adminNote } = z.object({ adminNote: z.string().min(1) }).parse(req.body);
+  const { payoutService } = await import('../services/payout.service.js');
+  const result = await payoutService.rejectChangeRequest(req.params.id, req.user!.id, adminNote);
+  res.json({ success: true, result });
+}));
+
+// ════════════════════════════════════════════════════════════════════════════
 //  TEMPLATES
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -573,12 +624,42 @@ router.post('/disputes/:orderId/resolve', asyncHandler(async (req: Request, res:
       }),
     ]);
   } else {
-    // Actual on-chain refund handled manually via Helio / Phantom
+    // Refund itself is manual — admin refunds the buyer directly via the
+    // Paystack or Skrill dashboard, then confirms here. This just corrects
+    // the internal ledger: the pending amount credited at escrow-funding
+    // time must be removed since the creator will never be paid it.
     await prisma.$transaction([
       prisma.order.update({ where: { id: order.id }, data: { status: 'REFUNDED' } }),
       prisma.escrow.updateMany({ where: { orderId: order.id }, data: { status: 'REFUNDED', refundedAt: new Date() } }),
+      prisma.creatorWallet.update({
+        where: { userId: order.creatorId },
+        data:  { pending: { decrement: creatorEarning } },
+      }),
     ]);
   }
+
+  // Order/Escrow are project-agnostic — find the project this dispute
+  // belongs to via the accepted bid, so its status isn't left stuck on
+  // DISPUTED forever.
+  if (order.mongoBidId) {
+    const bid = await prisma.bid.findUnique({ where: { id: order.mongoBidId }, select: { projectId: true } });
+    if (bid) {
+      await prisma.project.update({
+        where: { id: bid.projectId },
+        data:  { status: decision === 'RELEASE' ? 'COMPLETED' : 'CANCELLED' },
+      });
+    }
+  }
+
+  const notifyMsg = decision === 'RELEASE'
+    ? 'The dispute was resolved in the creator\'s favor — payment has been released.'
+    : 'The dispute was resolved — the buyer has been refunded.';
+  await prisma.notification.createMany({
+    data: [
+      { userId: order.buyerId,   type: 'DISPUTE_RESOLVED', title: 'Dispute resolved', message: notifyMsg },
+      { userId: order.creatorId, type: 'DISPUTE_RESOLVED', title: 'Dispute resolved', message: notifyMsg },
+    ],
+  }).catch(() => {});
 
   res.json({ success: true, decision });
 }));

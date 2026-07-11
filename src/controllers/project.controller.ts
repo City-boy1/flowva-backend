@@ -105,20 +105,4 @@ openDispute: asyncHandler(async (req: Request, res: Response) => {
   const project = await projectService.openDispute(req.params.id, req.user!.id, reason);
   res.json({ success: true, project });
 }),
-
-fundEscrow: asyncHandler(async (req: Request, res: Response) => {
-    const { projectId, bidId, amount, method, reference } = z.object({
-      projectId: z.string(),
-      bidId: z.string(),
-      amount: z.number().positive(),
-      method: z.string(),
-      reference: z.string(),
-    }).parse(req.body);
-
-    const result = await projectService.fundEscrow({
-      projectId, bidId, amount, method, reference,
-      clientId: req.user!.id,
-    });
-    res.status(201).json({ success: true, ...result });
-  }),
 };

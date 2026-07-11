@@ -9,26 +9,29 @@ export interface ITemplate extends Document {
   category: string;
   tags: string[];
   software: string[];
-  price: number;
-  currency: string;
+  creatorCountry: string;     // ISO-2, copied from User.country at upload time
+  currency: string;           // creator's own currency, or 'USD'
+  priceLocal: number;         // required — price in `currency`
+  priceUSD?: number | null;   // optional — only meaningful when currency !== 'USD'
   fileUrl: string;            // Cloudinary secure_url
   filePublicId: string;       // Cloudinary public_id (for deletion)
   fileType: 'video' | 'zip' | 'image' | 'pdf';
   fileSizeBytes: number;
-  previewUrl: string | null;  // Cloudinary thumbnail (video first-frame) or null
-previewVideoUrl: string | null;  // 8-second preview clip — safe to expose publicly
-previewPublicId: string | null;
+  previewUrl: string | null;  
+  previewVideoUrl: string | null;  
+  previewPublicId: string | null;
+  previewVideoPublicId: string | null;
   status: TemplateStatus;
 
-approvedBy?: string | null;
-approvedAt?: Date | null;
+  approvedBy?: string | null;
+  approvedAt?: Date | null;
 
-rejectedBy?: string | null;
-rejectedAt?: Date | null;
+  rejectedBy?: string | null;
+  rejectedAt?: Date | null;
 
-rejectionReason: string | null;
+  rejectionReason: string | null;
 
-downloadCount: number;
+  downloadCount: number;
   purchaseCount: number;
   salesCount: number;
   rating: number;
@@ -45,15 +48,18 @@ const TemplateSchema = new Schema<ITemplate>(
     category:         { type: String, required: true, index: true },
     tags:             { type: [String], default: [] },
     software:         { type: [String], default: [] },
-    price:            { type: Number, required: true, min: 0 },
-    currency:         { type: String, default: 'USD' },
+    creatorCountry:   { type: String, required: true, index: true },
+    currency:         { type: String, required: true, default: 'USD' },
+    priceLocal:       { type: Number, required: true, min: 0 },
+    priceUSD:         { type: Number, default: null, min: 0 },
     fileUrl:          { type: String, required: true },
     filePublicId:     { type: String, required: true },
     fileType:         { type: String, enum: ['video', 'zip', 'image', 'pdf'], required: true },
     fileSizeBytes:    { type: Number, required: true },
-    previewUrl:       { type: String, default: null },
-    previewVideoUrl:  { type: String, default: null },
-    previewPublicId:  { type: String, default: null },
+    previewUrl:            { type: String, default: null },
+    previewVideoUrl:       { type: String, default: null },
+    previewPublicId:       { type: String, default: null },
+    previewVideoPublicId:  { type: String, default: null },
    status: {
   type: String,
   enum: ['PENDING', 'APPROVED', 'REJECTED'],
@@ -104,7 +110,8 @@ downloadCount: {
 
 // Compound index for public listing queries
 TemplateSchema.index({ status: 1, category: 1, createdAt: -1 });
-TemplateSchema.index({ status: 1, price: 1 });
+TemplateSchema.index({ status: 1, priceLocal: 1 });
+TemplateSchema.index({ status: 1, creatorCountry: 1, createdAt: -1 }); // marketplace country filter
 TemplateSchema.index({ title: 'text', description: 'text', tags: 'text' });
 TemplateSchema.index({ title: 'text', description: 'text' });
 TemplateSchema.index({ status: 1, createdAt: -1 });   // main marketplace query

@@ -10,27 +10,47 @@ const createSchema = z.object({
   category:    z.string().min(2).max(60),
   tags:        z.preprocess(v => typeof v === 'string' ? JSON.parse(v) : v, z.array(z.string()).max(10)).optional().default([]),
   software:    z.preprocess(v => typeof v === 'string' ? JSON.parse(v) : v, z.array(z.string()).max(10)).optional().default([]),
-  price:       z.preprocess(Number, z.number().min(0)),
-  currency:    z.string().default('USD'),
+  // priceLocal is always required — in `currency`, which is either the
+  // creator's own currency or 'USD' if that's already their country's
+  // currency. priceUSD is the optional add-on that makes the template
+  // visible/purchasable to buyers outside the creator's own country.
+  priceLocal:  z.preprocess(Number, z.number().min(0.01, 'Price is required')),
+  priceUSD:    z.preprocess(
+                 v => (v === undefined || v === '' ? undefined : Number(v)),
+                 z.number().min(0.01).optional(),
+               ),
+  currency:    z.string().length(3).default('USD'),
 });
 
 export const templateController = {
 
   // Single file — preview auto-generated inside templateService.create
   create: asyncHandler(async (req: Request, res: Response) => {
-  const file = req.file;
-  if (!file) throw new AppError('Template file required', 400);
+  const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+  const file      = files?.file?.[0];
+  const thumbnail = files?.thumbnail?.[0];
+  const preview   = files?.preview?.[0];
+
+  if (!file)      throw new AppError('Template file required', 400);
+  if (!thumbnail) throw new AppError('Thumbnail image required', 400);
 
   const data = createSchema.parse(req.body);
 
-  // multer diskStorage gives file.path; memoryStorage gives file.buffer
   const template = await templateService.create(req.user!.id, {
     ...data,
-    fileBuffer:    (file as any).buffer,        // present only for memory storage
-    filePath:      (file as any).path,          // present only for disk storage
-    fileMime:      file.mimetype,
-    fileSizeBytes: file.size,
-    originalName:  file.originalname,
+    fileBuffer:            (file as any).buffer,
+    filePath:              (file as any).path,
+    fileMime:              file.mimetype,
+    fileSizeBytes:         file.size,
+    originalName:          file.originalname,
+    thumbnailBuffer:       (thumbnail as any).buffer,
+    thumbnailPath:         (thumbnail as any).path,
+    thumbnailMime:         thumbnail.mimetype,
+    thumbnailSizeBytes:    thumbnail.size,
+    previewVideoBuffer:    (preview as any)?.buffer,
+    previewVideoPath:      (preview as any)?.path,
+    previewVideoMime:      preview?.mimetype,
+    previewVideoSizeBytes: preview?.size,
   });
 
   res.status(201).json({ success: true, template });
@@ -66,8 +86,12 @@ export const templateController = {
     category:    z.string().min(2).max(60).optional(),
     tags:        z.preprocess(v => typeof v === 'string' ? JSON.parse(v) : v, z.array(z.string()).max(10)).optional(),
     software:    z.preprocess(v => typeof v === 'string' ? JSON.parse(v) : v, z.array(z.string()).max(10)).optional(),
-    price:       z.preprocess(Number, z.number().min(0)).optional(),
-    currency:    z.string().optional(),
+    priceLocal:  z.preprocess(Number, z.number().min(0.01)).optional(),
+    priceUSD:    z.preprocess(
+                   v => (v === undefined || v === '' ? undefined : Number(v)),
+                   z.number().min(0.01).optional(),
+                 ),
+    currency:    z.string().length(3).optional(),
   });
   const safe = updateSchema.parse(req.body);
   const template = await templateService.update(req.params.id, req.user!.id, safe);

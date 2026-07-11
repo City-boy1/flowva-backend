@@ -12,6 +12,7 @@ model User {
   id                  String         @id @default(cuid())
   name                String
   email               String         @unique
+  phone               String?
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
   avatarUrl           String?
@@ -40,6 +41,8 @@ model User {
   ordersAsCreator     Order[]        @relation("CreatorOrders")
   payments            Payment[]
   payoutSetting       PayoutSetting?
+  payoutChangeRequests PayoutChangeRequest[]
+  payouts             Payout[]
   projects            Project[]
   ratingsReceived     Rating[]       @relation("RatingsReceived")
   ratingsGiven        Rating[]       @relation("RatingsGiven")
@@ -74,16 +77,44 @@ model RefreshToken {
 }
 
 model PayoutSetting {
-  id             String       @id @default(cuid())
-  userId         String       @unique
-  primaryMethod  PayoutMethod
-  isVerified     Boolean      @default(false)
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  solanaAddress  String
-  helioPaylinkId String?
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                     String        @id @default(cuid())
+  userId                 String        @unique
+  primaryMethod          PayoutMethod?
+  payoutFrequency        PayoutFrequency @default(MONTHLY)
+  isVerified             Boolean       @default(false)
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  paystackSubaccountCode String?       // stores Paystack's TRANSFER RECIPIENT code (not a subaccount — see payout.service.ts note)
+  paystackBankCode       String?
+  paystackAccountNumber  String?
+  paystackAccountName    String?
+  skrillEmail            String?
+  greyAccountNumber      String?
+  greyAccountName        String?
+  user                   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
+
+model Payout {
+  id         String           @id @default(cuid())
+  creatorId  String
+  amount     Float
+  currency   String           @default("USD")
+  method     PayoutMethod
+  status     WithdrawalStatus @default(PENDING)
+  reference  String?
+  paidAt     DateTime?
+  createdAt  DateTime         @default(now())
+  creator    User             @relation(fields: [creatorId], references: [id])
+
+  @@index([creatorId])
+  @@index([status])
+}
+
+enum PayoutFrequency {
+  WEEKLY
+  MONTHLY
+}
+
 
 model CreatorWallet {
   id          String   @id @default(cuid())
@@ -366,7 +397,9 @@ enum UserStatus {
 }
 
 enum PayoutMethod {
-  USDC_WALLET
+  PAYSTACK_SUBACCOUNT
+  SKRILL
+  GREY
 }
 
 enum OrderStatus {
@@ -389,7 +422,31 @@ enum PaymentStatus {
 }
 
 enum PaymentProvider {
-  HELIO
+  PAYSTACK
+  SKRILL
+}
+
+enum PayoutChangeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model PayoutChangeRequest {
+  id                String             @id @default(cuid())
+  userId            String
+  requestedMethod   PayoutMethod
+  requestedDetails  Json               // { email } for SKRILL, { accountNumber, accountName } for GREY, { bankCode, accountNumber } for PAYSTACK_SUBACCOUNT
+  reason            String             // creator's written justification — required, enforced at controller layer (min length)
+  status            PayoutChangeStatus @default(PENDING)
+  adminNote         String?
+  reviewedBy        String?
+  reviewedAt        DateTime?
+  createdAt         DateTime           @default(now())
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
 }
 
 enum EscrowStatus {

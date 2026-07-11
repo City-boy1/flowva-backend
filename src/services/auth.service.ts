@@ -17,23 +17,18 @@ const REFRESH_DAYS = 7;
 export const authService = {
 
   async signup(data: {
-    name:           string;
-    email:          string;
-    password:       string;
-    role:           'BUYER' | 'CREATOR';
-    country:        string;
-    solanaAddress?: string; // required for CREATOR, enforced at controller layer
+    name:     string;
+    email:    string;
+    password: string;
+    role:     'BUYER' | 'CREATOR';
+    country:  string;
+    phone?:   string; // required for CREATOR, enforced at controller layer
   }) {
     const exists = await prisma.user.findUnique({ where: { email: data.email } });
     if (exists) throw new AppError('Email already registered', 409);
 
-    // Extra service-layer guard — should never reach here for creators without
-    // a wallet address since the controller validates first, but belt-and-braces
-    if (data.role === 'CREATOR' && !data.solanaAddress) {
-      throw new AppError(
-        'A Solana USDC wallet address is required to create a creator account.',
-        400,
-      );
+    if (data.role === 'CREATOR' && !data.phone) {
+      throw new AppError('A phone number is required to create a creator account.', 400);
     }
 
     const passwordHash = await argon2.hash(data.password, {
@@ -61,6 +56,7 @@ export const authService = {
           passwordHash,
           role:             data.role,
           country:          data.country,
+          phone:            data.phone ?? null,
           isEarlyAdopter,
           emailVerifyToken: hashToken(verifyToken),
         },
@@ -72,22 +68,13 @@ export const authService = {
 
       if (data.role === 'CREATOR') {
         // Initialise display-only earnings tracker
-        await tx.creatorWallet.create({
-          data: { userId: u.id },
-        });
+        await tx.creatorWallet.create({ data: { userId: u.id } });
 
-        // Save creator's Solana USDC deposit address.
-        // Helio reads this and splits 70% directly to it on every sale — on-chain,
-        // no middleman. Creator withdraws to local currency (MoMo / bank) themselves
-        // via their exchange app (Binance GH/KE/UG, Monica NG, Coinbase/Kraken US/UK/EU).
-        await tx.payoutSetting.create({
-          data: {
-            userId:        u.id,
-            primaryMethod: 'USDC_WALLET',
-            solanaAddress: data.solanaAddress!, // validated at controller
-            isVerified:    true,
-          },
-        });
+        // Payout method (Paystack / Skrill / Grey) and bank/account details
+        // are set up later in the dashboard — signup only ever collects
+        // name/email/password/country/phone. Create a bare row now so the
+        // dashboard payout panel has something to read/update on first
+        await tx.payoutSetting.create({ data: { userId: u.id } });
       }
 
       return u;
